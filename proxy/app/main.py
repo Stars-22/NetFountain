@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
+from typing import Any
 
 import aiohttp
 from fastapi import FastAPI
@@ -18,6 +20,7 @@ from .config import ProxySettings, load_proxy_settings
 from .dispatcher import Dispatcher
 from .registry import Registry
 from .routes import router
+from .stats import ProxyStats
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +29,34 @@ _CONFIG_PATH = os.path.join(
 )
 
 
+class ProxyStatsMiddleware:
+    """代理层调用计数中间件：按来源客户端 IP 累计 /api/v1 请求次数。
+
+    站点转发与错误计数在路由层记录（``_forward``），此处只负责来源 IP。
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope.get("path", "").startswith("/api/v1"):
+            stats = getattr(scope.get("app"), "state", None)
+            proxy_stats = getattr(stats, "stats", None)
+            if proxy_stats is not None:
+                client = scope.get("client")
+                ip = client[0] if client else None
+                proxy_stats.record_call(ip=ip)
+        await self.app(scope, receive, send)
+
+
 def create_app(
     settings: ProxySettings | None = None,
     *,
     registry: Registry | None = None,
     session: aiohttp.ClientSession | None = None,
     start_reload: bool = True,
+    stats: ProxyStats | None = None,
+    start_time: float | None = None,
 ) -> FastAPI:
     """装配 FastAPI 应用；组件可注入，未注入的在 lifespan 内按配置创建。"""
     if settings is None:
@@ -85,6 +110,11 @@ def create_app(
 
     app = FastAPI(title="Proxy Gateway", lifespan=lifespan)
     app.state.settings = settings
+    app.state.stats = stats if stats is not None else ProxyStats(start_time=start_time)
+    app.state.start_time = (
+        app.state.stats.start_time if start_time is None else start_time
+    )
+    app.add_middleware(ProxyStatsMiddleware)
     app.include_router(router)
     return app
 

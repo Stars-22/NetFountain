@@ -184,7 +184,7 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/3/release
 
 `GET /api/v1/health`
 
-返回代理层自身状态与当前已加载的站点路由表（不含站点池数据）。
+返回代理层自身状态（启动时间、API 被调用次数等）与当前已加载的站点路由表（不含站点池数据）。
 
 请求示例：
 
@@ -200,6 +200,14 @@ curl http://127.0.0.1:9000/api/v1/health
   "msg": "ok",
   "data": {
     "status": "ok",
+    "started_at": "2026-08-29T12:00:00Z",
+    "uptime": 123.456,
+    "stats": {
+      "total_calls": 5,
+      "calls_by_ip": { "127.0.0.1": 5 },
+      "calls_by_site": { "site_a": 2, "site_b": 2 },
+      "errors": { "40400": 1 }
+    },
     "sites": [
       {"name": "site_a", "base_url": "http://127.0.0.1:8001", "target_url": "https://www.example.com"},
       {"name": "site_b", "base_url": "http://127.0.0.1:8002", "target_url": "https://www.example.org"}
@@ -207,6 +215,8 @@ curl http://127.0.0.1:9000/api/v1/health
   }
 }
 ```
+
+`started_at` 为代理层启动时间（ISO 8601 UTC），`uptime` 为运行秒数；`stats` 为代理层 API 被调用统计（`total_calls` 总次数、`calls_by_ip` 按来源客户端 IP、`calls_by_site` 按站点转发、`errors` 错误响应计数）。统计为进程内累计，进程重启后归零。
 
 `sites[].name` 即 `{site}` 取值；`target_url` 为该站点二级池连通性测试所面向的目标站点。
 

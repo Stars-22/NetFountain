@@ -264,7 +264,7 @@ curl http://<level2-host>:8001/api/v1/status
 成功标准：
 
 - 各服务返回 `{"code":0, ...}`，`code=0` 表示正常。
-- 代理层 `/api/v1/health` 的 `data.sites` 中能看到配置的全部站点。
+- 代理层 `/api/v1/health` 的 `data.sites` 中能看到配置的全部站点，`data.started_at` / `data.stats` 展示代理层启动时间与 API 被调用次数。
 - 一级池 `status` 的 `pool_size` 随时间增长（供应商可用时）。
 - 二级池 `status` 的 `pool_stats.total` 随时间增长，`last_synced_id` 持续前进（说明与一级池同步正常）。
 

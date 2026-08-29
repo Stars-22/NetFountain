@@ -39,6 +39,11 @@ async def test_health(running_app, registry):
     assert body["code"] == 0
     data = body["data"]
     assert data["status"] == "ok"
+    assert data["started_at"].endswith("Z")
+    assert data["uptime"] >= 0
+    stats = data["stats"]
+    assert stats["total_calls"] >= 1
+    assert "127.0.0.1" in stats["calls_by_ip"]
     sites = data["sites"]
     assert {s["name"] for s in sites} == {"site_a", "site_b"}
     by_name = {s["name"]: s for s in sites}
@@ -59,6 +64,35 @@ async def test_health_empty_registry(running_app, tmp_path):
     async with running_app(app) as client:
         resp = await client.get("/api/v1/health")
     assert resp.json()["data"]["sites"] == []
+
+
+async def test_health_stats_after_passthrough(running_app, registry, aio_mock):
+    aio_mock.get("http://127.0.0.1:8001/api/v1/status", payload=STUB_OK, status=200, repeat=True)
+    aio_mock.get("http://127.0.0.1:8002/api/v1/status", payload=STUB_OK, status=200, repeat=True)
+    app = _proxy_app(registry)
+    async with running_app(app) as client:
+        await client.get("/api/v1/site_a/status")
+        await client.get("/api/v1/site_a/status")
+        await client.get("/api/v1/site_b/status")
+        resp = await client.get("/api/v1/health")
+    stats = resp.json()["data"]["stats"]
+    assert stats["calls_by_site"] == {"site_a": 2, "site_b": 1}
+    assert stats["total_calls"] == 4  # 3 次透传 + 1 次 health
+
+
+async def test_health_stats_errors(running_app, registry, aio_mock):
+    aio_mock.get(
+        "http://127.0.0.1:8001/api/v1/status",
+        exception=aiohttp.ClientConnectionError("down"),
+    )
+    app = _proxy_app(registry)
+    async with running_app(app) as client:
+        await client.get("/api/v1/nope/status")
+        await client.get("/api/v1/site_a/status")
+        resp = await client.get("/api/v1/health")
+    stats = resp.json()["data"]["stats"]
+    assert stats["errors"] == {"40400": 1, "50200": 1}
+    assert stats["calls_by_site"] == {}
 
 
 # PX-RT-002 /{site}/status 透传

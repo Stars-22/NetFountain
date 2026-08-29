@@ -371,7 +371,7 @@ GET /api/v1/ips/after/100
 
 ### 4.1 GET /api/v1/health
 
-网关存活检查，返回当前路由表（不访问上游）。
+网关存活检查，返回当前路由表与代理层自身运行统计（不访问上游）。
 
 **请求**：无参数、无请求体。
 
@@ -380,7 +380,19 @@ GET /api/v1/ips/after/100
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `status` | str | 固定 `"ok"` |
+| `started_at` | str | 代理层启动时间（ISO 8601 UTC，如 `2026-08-29T12:00:00Z`） |
+| `uptime` | float | 自启动以来的运行秒数 |
+| `stats` | object | 代理层 API 被调用统计（见下） |
 | `sites` | array | 站点列表，每项 `{name, base_url, target_url}` |
+
+`stats` 字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `total_calls` | int | 代理层 API 被调用总次数（含 health 自身） |
+| `calls_by_ip` | object | 按来源客户端 IP 的调用次数 `{ip: count}` |
+| `calls_by_site` | object | 按站点透传转发次数 `{site: count}` |
+| `errors` | object | 代理层错误响应次数 `{code: count}`（如 `40400` / `50200`） |
 
 **示例**：
 
@@ -389,6 +401,14 @@ GET /api/v1/ips/after/100
   "code": 0, "msg": "ok",
   "data": {
     "status": "ok",
+    "started_at": "2026-08-29T12:00:00Z",
+    "uptime": 123.456,
+    "stats": {
+      "total_calls": 5,
+      "calls_by_ip": { "127.0.0.1": 5 },
+      "calls_by_site": { "site_a": 2, "site_b": 2 },
+      "errors": { "40400": 1 }
+    },
     "sites": [
       { "name": "site_a", "base_url": "http://127.0.0.1:8001", "target_url": null },
       { "name": "site_b", "base_url": "http://127.0.0.1:8002", "target_url": null }
@@ -466,7 +486,7 @@ GET /api/v1/ips/after/100
 
 | 方法 | 路径 | 参数 | 请求体 | data |
 |---|---|---|---|---|
-| GET | `/api/v1/health` | — | — | 路由表 |
+| GET | `/api/v1/health` | — | — | 路由表+代理层统计 |
 | GET | `/api/v1/{site}/status` | `site` | — | 上游透传 |
 | GET | `/api/v1/{site}/count` | `site` | — | 上游透传 |
 | GET | `/api/v1/{site}/ips` | `site` | — | 上游透传 |
