@@ -16,7 +16,8 @@ from typing import Any
 import aiohttp
 from fastapi import FastAPI
 
-from ip_pool_common.api import ApiCounterMiddleware
+from ip_pool_common.api import ApiCounterMiddleware, BizCodeLogMiddleware
+from ip_pool_common.logging_setup import setup_logging
 
 from .config import Level1Settings, load_level1_settings
 from .pool import Level1Pool, ServiceStats
@@ -61,6 +62,8 @@ def create_app(
             settings = load_level1_settings(_CONFIG_PATH)
         else:
             settings = load_level1_settings()
+
+    setup_logging("level1_pool", level=settings.service.log_level)
 
     pool = pool or Level1Pool(max_size=settings.pool.max_size)
     stats = stats or ServiceStats()
@@ -123,6 +126,7 @@ def create_app(
     app.state.start_time = start_time if start_time is not None else time.time()
     app.state.api_call_count = 0
     app.add_middleware(V1CounterMiddleware)
+    app.add_middleware(BizCodeLogMiddleware)
     app.include_router(router)
     return app
 

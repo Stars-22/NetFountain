@@ -16,6 +16,9 @@ from typing import Any
 import aiohttp
 from fastapi import FastAPI
 
+from ip_pool_common.api import BizCodeLogMiddleware
+from ip_pool_common.logging_setup import setup_logging
+
 from .config import ProxySettings, load_proxy_settings
 from .dispatcher import Dispatcher
 from .registry import Registry
@@ -64,6 +67,8 @@ def create_app(
             settings = load_proxy_settings(_CONFIG_PATH)
         else:
             settings = load_proxy_settings()
+
+    setup_logging("proxy", level=settings.service.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -115,6 +120,7 @@ def create_app(
         app.state.stats.start_time if start_time is None else start_time
     )
     app.add_middleware(ProxyStatsMiddleware)
+    app.add_middleware(BizCodeLogMiddleware)
     app.include_router(router)
     return app
 

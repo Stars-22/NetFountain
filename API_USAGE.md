@@ -51,6 +51,8 @@
 | 上游不可达/超时 | 502 | `{"code":50200,"msg":"upstream error","data":null}` |
 | 上游正常 | 上游状态码 | 上游响应体原样 |
 
+> **日志中的业务码**：三服务启动后按 `service.log_level` 输出结构化日志，且每条 API 请求追加一行含返回业务码的访问日志，格式 `http=<HTTP状态码> biz=<业务码> method=<方法> path=<路径>`。`biz` 即响应 body 的 `code` 字段，便于同时观测 HTTP 状态与业务结果（如 `HTTP 200` + `biz=40400` 表示记录不存在）。
+
 ---
 
 ## 2. 一级池 API（level1_pool, :8000）

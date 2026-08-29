@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from .api import ApiCounterMiddleware, ErrorCode, err, ok, run_app
+from .api import ApiCounterMiddleware, BizCodeLogMiddleware, ErrorCode, err, ok, run_app
 from .config import load_settings, load_yaml
 from .logging_setup import setup_logging
 from .models import (
@@ -19,6 +19,7 @@ from .testing import PROBE_HOST, PROBE_PORT, PROBE_TARGET, batch_test, proxy_rea
 
 __all__ = [
     "ApiCounterMiddleware",
+    "BizCodeLogMiddleware",
     "ErrorCode",
     "IpRecord",
     "Level2Record",

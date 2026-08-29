@@ -1,8 +1,10 @@
-"""routes.py 测试：/health、8 个透传端点、未配置站点、上游错误码。
+"""routes.py 测试：/health、8 个透传端点、未配置站点、上游错误码、业务码日志。
 
 覆盖测试计划书 PX-RT-001 ~ 009。
 """
 from __future__ import annotations
+
+import logging
 
 import aiohttp
 
@@ -222,6 +224,41 @@ async def test_unknown_site_all_endpoints_40400(running_app, registry):
         ]
     for body in checks:
         assert body["code"] == 40400
+
+
+async def test_log_records_biz_code_for_unconfigured_site(running_app, registry, caplog):
+    app = _proxy_app(registry)
+    with caplog.at_level(logging.INFO):
+        async with running_app(app) as client:
+            resp = await client.get("/api/v1/not_configured/status")
+    assert resp.status_code == 404
+    assert resp.json()["code"] == 40400
+    assert any("http=404" in m and "biz=40400" in m for m in caplog.messages)
+
+
+async def test_log_records_biz_code_for_record_not_found(running_app, registry, aio_mock, caplog):
+    payload = {"code": 40400, "msg": "record not found: 42", "data": None}
+    aio_mock.post(
+        "http://127.0.0.1:8001/api/v1/ips/42/release", payload=payload, status=200
+    )
+    app = _proxy_app(registry)
+    with caplog.at_level(logging.INFO):
+        async with running_app(app) as client:
+            resp = await client.post("/api/v1/site_a/ips/42/release")
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 40400
+    assert any("http=200" in m and "biz=40400" in m for m in caplog.messages)
+
+
+async def test_log_records_biz_code_for_success(running_app, registry, aio_mock, caplog):
+    aio_mock.get("http://127.0.0.1:8001/api/v1/status", payload=STUB_OK, status=200)
+    app = _proxy_app(registry)
+    with caplog.at_level(logging.INFO):
+        async with running_app(app) as client:
+            resp = await client.get("/api/v1/site_a/status")
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+    assert any("http=200" in m and "biz=0" in m for m in caplog.messages)
 
 
 # 上游不可达/超时 → 50200

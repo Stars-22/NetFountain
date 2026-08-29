@@ -1,12 +1,21 @@
-"""api.py 测试：响应封装、错误码、计数中间件、统一启动入口。"""
+"""api.py 测试：响应封装、错误码、计数中间件、业务码日志中间件、统一启动入口。"""
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 
 import aiohttp
 import pytest
 
-from ip_pool_common.api import ApiCounterMiddleware, ErrorCode, err, ok, run_app
+from ip_pool_common.api import (
+    ApiCounterMiddleware,
+    BizCodeLogMiddleware,
+    ErrorCode,
+    err,
+    ok,
+    run_app,
+)
 
 
 def test_ok_wraps_data():
@@ -65,6 +74,73 @@ async def test_api_counter_ignores_lifespan():
     mw = ApiCounterMiddleware(_fake_app)
     await mw({"type": "lifespan"}, _receive, _send)
     assert mw.count == 0
+
+
+async def _fake_app_body(status: int, body_bytes: bytes):
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": body_bytes})
+
+    return app
+
+
+async def _capture_send(container):
+    async def send(message):
+        container.append(message)
+
+    return send
+
+
+async def test_biz_code_log_middleware_logs_code(caplog):
+    app = await _fake_app_body(
+        200, json.dumps(err(40400, "record not found: 3")).encode("utf-8")
+    )
+    mw = BizCodeLogMiddleware(app)
+    scope = {"type": "http", "method": "POST", "path": "/api/v1/site_a/ips/3/release"}
+    with caplog.at_level(logging.INFO):
+        await mw(scope, _receive, _send)
+    assert any("http=200" in m for m in caplog.messages)
+    assert any("biz=40400" in m for m in caplog.messages)
+    assert any("method=POST" in m for m in caplog.messages)
+    assert any("path=/api/v1/site_a/ips/3/release" in m for m in caplog.messages)
+
+
+async def test_biz_code_log_middleware_non_json_body_logs_dash(caplog):
+    app = await _fake_app_body(500, b"boom")
+    mw = BizCodeLogMiddleware(app)
+    scope = {"type": "http", "method": "GET", "path": "/x"}
+    with caplog.at_level(logging.INFO):
+        await mw(scope, _receive, _send)
+    assert any("http=500" in m and "biz=-" in m for m in caplog.messages)
+
+
+async def test_biz_code_log_middleware_empty_body_logs_dash(caplog):
+    app = await _fake_app_body(200, b"")
+    mw = BizCodeLogMiddleware(app)
+    scope = {"type": "http", "method": "GET", "path": "/x"}
+    with caplog.at_level(logging.INFO):
+        await mw(scope, _receive, _send)
+    assert any("biz=-" in m for m in caplog.messages)
+
+
+async def test_biz_code_log_middleware_ignores_lifespan(caplog):
+    mw = BizCodeLogMiddleware(_fake_app)
+    with caplog.at_level(logging.INFO):
+        await mw({"type": "lifespan"}, _receive, _send)
+    assert not caplog.messages
+
+
+async def test_biz_code_log_middleware_passthrough_unchanged(caplog):
+    sent = []
+    app = await _fake_app_body(201, json.dumps({"code": 0, "msg": "ok"}).encode())
+    mw = BizCodeLogMiddleware(app)
+    scope = {"type": "http", "method": "GET", "path": "/health"}
+    send = await _capture_send(sent)
+    with caplog.at_level(logging.INFO):
+        await mw(scope, _receive, send)
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
+    assert sent[0]["status"] == 201
+    assert sent[1]["body"] == json.dumps({"code": 0, "msg": "ok"}).encode()
 
 
 async def test_run_app_starts_and_serves():

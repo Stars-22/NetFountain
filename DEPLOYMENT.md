@@ -291,8 +291,16 @@ WantedBy=multi-user.target
 
 ### 8.2 日志
 
-- 三个服务默认结构化日志输出到标准输出（`log_level` 在各自配置 `service.log_level` 中调整）。用 systemd 可经 `journalctl -u <unit>` 查看，或由进程托管重定向到文件。
+- 三个服务默认结构化日志输出到标准输出（`log_level` 在各自配置 `service.log_level` 中调整，服务启动时通过 `setup_logging` 生效）。用 systemd 可经 `journalctl -u <unit>` 查看，或由进程托管重定向到文件。
 - 常见日志关键字：一级池 `pull from ... failed`（供应商拉取失败）、二级池同步相关警告、代理层路由重载信息。
+- **每条 API 请求会额外输出一条带业务码的访问日志**（在 uvicorn 默认访问日志之后），格式为 `http=<HTTP状态码> biz=<业务码> method=<方法> path=<路径>`，如：
+
+  ```
+  INFO:     127.0.0.1:61234 - "POST /api/v1/site_a/ips/42/release HTTP/1.1" 200 OK
+  2026-08-29 12:00:00 INFO proxy [ip_pool_common.api] http=200 biz=40400 method=POST path=/api/v1/site_a/ips/42/release
+  ```
+
+  `biz` 即响应 body 的 `code` 字段（`0` 成功，`40400`/`40402`/`50200` 等为业务错误），HTTP 状态码与业务码可据此同时观测，便于对「HTTP 成功但业务失败」的请求告警/排障。响应 body 非 JSON 时 `biz` 记 `-`。
 
 ### 8.3 常见问题
 
