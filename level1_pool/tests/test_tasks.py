@@ -92,7 +92,8 @@ async def test_pull_exception_does_not_stop_loop(make_ip):
     assert provider.pull_calls >= 2
     assert stats.total_pulled == provider.pull_calls - 1
     assert stats.total_entered == stats.total_pulled
-    assert pool.size() == stats.total_entered
+    assert pool.size() + pool.duplicates == stats.total_entered
+    assert 1 <= pool.size() <= stats.total_entered
 
 
 async def test_stats_total_pulled_and_entered(make_ip):
@@ -105,7 +106,8 @@ async def test_stats_total_pulled_and_entered(make_ip):
     await _run_until_cancelled(task)
     assert stats.total_pulled == provider.pull_calls * 2
     assert stats.total_entered == provider.pull_calls * 1
-    assert pool.size() == stats.total_entered
+    assert pool.size() == 1
+    assert pool.size() + pool.duplicates == stats.total_entered
 
 
 async def test_pull_task_cancellation(make_ip):

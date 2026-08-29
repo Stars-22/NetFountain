@@ -40,6 +40,7 @@ async def status(request: Request):
             "uptime": round(time.time() - request.app.state.start_time, 3),
             "total_pulled": request.app.state.stats.total_pulled,
             "total_entered": request.app.state.stats.total_entered,
+            "total_duplicates": request.app.state.pool.duplicates,
             "pool_size": counts.total,
             "counts": {
                 "http": counts.http,
