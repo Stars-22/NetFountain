@@ -19,5 +19,7 @@ pool:
 
 test_timeout: 3.0
 test_concurrency: 10
+test_buffer: 20
+test_workers: 5  # 缺省自动 = max(1, test_concurrency//pull_count)
 
 ttl_sweep_interval: 5.0

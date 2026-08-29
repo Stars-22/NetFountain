@@ -55,7 +55,13 @@ async def test_integration_closed_loop(mock_server, running_app):
     app = _integration_app(_api_url(mock_server), max_size=50, pull_count=3, pull_interval=0.05)
     async with running_app(app) as client:
         await asyncio.sleep(0.5)
-        status = (await client.get("/api/v1/status")).json()["data"]
+        # 等待测试管线排空：total_entered 追上 total_pulled（pass_all → 全通过）
+        status = None
+        for _ in range(100):
+            status = (await client.get("/api/v1/status")).json()["data"]
+            if status["total_pulled"] > 0 and status["total_entered"] >= status["total_pulled"]:
+                break
+            await asyncio.sleep(0.02)
         assert status["total_pulled"] > 0
         assert status["total_entered"] > 0
         assert status["pool_size"] > 0
@@ -97,6 +103,11 @@ async def test_integration_supplier_down_then_recovers(mock_server, running_app)
 
         mock_provider.state.failure_rate = 0.0
         await asyncio.sleep(0.3)
-        status = (await client.get("/api/v1/status")).json()["data"]
+        status = None
+        for _ in range(100):
+            status = (await client.get("/api/v1/status")).json()["data"]
+            if status["total_pulled"] > 0 and status["pool_size"] > 0:
+                break
+            await asyncio.sleep(0.02)
         assert status["total_pulled"] > 0
         assert status["pool_size"] > 0

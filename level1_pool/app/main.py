@@ -96,6 +96,8 @@ def create_app(
                         settings.provider.pull_count,
                         settings.provider.pull_interval,
                         pull_lock,
+                        buffer_size=settings.test_buffer,
+                        test_workers=settings.test_workers,
                     ).run()
                 ),
                 asyncio.create_task(

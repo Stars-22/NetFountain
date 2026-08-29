@@ -206,6 +206,14 @@ async def test_pull_connection_error_returns_empty(provider_cfg, provider_reques
     assert await provider.pull(10) == []
 
 
+async def test_pull_cancelled_rethrows(provider_cfg, provider_request_url, mock_session):
+    session, m = mock_session
+    m.get(provider_request_url(), exception=asyncio.CancelledError())
+    provider = DefaultHttpProvider(provider_cfg, session)
+    with pytest.raises(asyncio.CancelledError):
+        await provider.pull(10)
+
+
 async def test_pull_invalid_json_returns_empty(provider_cfg, provider_request_url, mock_session):
     session, m = mock_session
     m.get(provider_request_url(), status=200, body="not json{", content_type="application/json")
@@ -365,3 +373,49 @@ async def test_http91_pull_connection_error_returns_empty(
     m.get(http91_request_url(), exception=aiohttp.ClientConnectionError("refused"))
     provider = Http91Provider(http91_cfg, session)
     assert await provider.pull(10) == []
+
+
+async def test_http91_pull_cancelled_rethrows(
+    mock_session, http91_cfg, http91_request_url
+):
+    session, m = mock_session
+    m.get(http91_request_url(), exception=asyncio.CancelledError())
+    provider = Http91Provider(http91_cfg, session)
+    with pytest.raises(asyncio.CancelledError):
+        await provider.pull(10)
+
+
+def test_http91_parse_non_object_payload(http91_cfg):
+    provider = Http91Provider(http91_cfg, mock.MagicMock())
+    assert provider._parse([], 10) == []
+
+
+def test_http91_parse_data_not_object(http91_cfg):
+    provider = Http91Provider(http91_cfg, mock.MagicMock())
+    assert provider._parse({"code": 0, "data": "oops"}, 10) == []
+
+
+def test_http91_parse_missing_proxy_list(http91_cfg):
+    provider = Http91Provider(http91_cfg, mock.MagicMock())
+    assert provider._parse({"code": 0, "data": {"count": 0}}, 10) == []
+
+
+def test_http91_parse_skips_non_dict_item(http91_cfg):
+    provider = Http91Provider(http91_cfg, mock.MagicMock())
+    ips = provider._parse(
+        _http91_payload([42, {"ip": "1.2.3.4", "port": 8080}]),
+        10,
+    )
+    assert len(ips) == 1
+    assert ips[0].ip == "1.2.3.4"
+
+
+def test_http91_parse_numeric_expire_time(http91_cfg):
+    provider = Http91Provider(http91_cfg, mock.MagicMock())
+    ips = provider._parse(
+        _http91_payload([{"ip": "1.2.3.4", "port": 8080, "expire_time": "1800"}]),
+        10,
+        now=0.0,
+    )
+    assert len(ips) == 1
+    assert ips[0].ttl == 1800.0

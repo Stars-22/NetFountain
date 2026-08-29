@@ -40,6 +40,8 @@ class Level1Settings(BaseSettings):
     pool: PoolConfig = PoolConfig()
     test_timeout: float = 3.0
     test_concurrency: int = 10
+    test_buffer: int = 20
+    test_workers: int | None = None  # None=自动 max(1, test_concurrency//pull_count)
     ttl_sweep_interval: float = 5.0
 
 
