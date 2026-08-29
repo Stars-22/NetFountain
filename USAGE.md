@@ -216,7 +216,7 @@ curl http://127.0.0.1:9000/api/v1/health
 }
 ```
 
-`started_at` 为代理层启动时间（ISO 8601 UTC），`uptime` 为运行秒数；`stats` 为代理层 API 被调用统计（`total_calls` 总次数、`calls_by_ip` 按来源客户端 IP、`calls_by_site` 按站点转发、`errors` 错误响应计数）。统计为进程内累计，进程重启后归零。
+`started_at` 为代理层启动时间（ISO 8601 UTC），`uptime` 为运行秒数；`stats` 为代理层 API 被调用统计（`total_calls` 总次数、`calls_by_ip` 按来源客户端 IP、`calls_by_site` 按站点转发、`errors` 错误响应计数）。`errors` 除代理层传输错误（`40400` 站点未配置、`50200` 上游故障）外，还计入上游业务错误码（如 `40402` 空池）；代理层仅统计时读取上游 `code`，透传响应保持不变。统计为进程内累计，进程重启后归零。
 
 `sites[].name` 即 `{site}` 取值；`target_url` 为该站点二级池连通性测试所面向的目标站点。
 

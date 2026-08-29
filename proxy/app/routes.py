@@ -3,6 +3,7 @@
 统一响应 {code,msg,data}：透传端点把上游二级池响应原样返回（不缓存、
 不加工任何 IP/租赁数据）；站点未配置返回 40400；上游不可达/超时返回 50200。
 /health 额外展示代理层自身统计（启动时间、API 被调用次数等）。
+仅统计时读取上游 body 的 ``code`` 业务码（body 已被透传解析），响应仍原样返回。
 """
 from __future__ import annotations
 
@@ -63,6 +64,9 @@ async def _forward(request: Request, site: str, method: str) -> JSONResponse:
             content=err(ErrorCode.UPSTREAM_ERROR, "upstream error"),
         )
     _record(request, site=site)
+    biz_code = body.get("code") if isinstance(body, dict) else None
+    if status >= 400 or (isinstance(biz_code, int) and biz_code != 0):
+        _record(request, error_code=biz_code if isinstance(biz_code, int) else status)
     return JSONResponse(status_code=status, content=body)
 
 

@@ -394,7 +394,7 @@ GET /api/v1/ips/after/100
 | `total_calls` | int | 代理层 API 被调用总次数（含 health 自身） |
 | `calls_by_ip` | object | 按来源客户端 IP 的调用次数 `{ip: count}` |
 | `calls_by_site` | object | 按站点透传转发次数 `{site: count}` |
-| `errors` | object | 代理层错误响应次数 `{code: count}`（如 `40400` / `50200`） |
+| `errors` | object | 错误响应次数 `{code: count}`，含代理层传输错误（`40400` / `50200`）与上游业务错误码（如 `40402` 空池）；代理层仅统计时读取上游 `code`，响应仍原样透传 |
 
 **示例**：
 

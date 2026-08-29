@@ -97,6 +97,22 @@ async def test_health_stats_errors(running_app, registry, aio_mock):
     assert stats["calls_by_site"] == {}
 
 
+# 上游业务错误（HTTP 200 + code=40402 空池）计入 errors，响应仍原样透传
+async def test_business_error_counted_and_passthrough(running_app, registry, aio_mock):
+    empty_pool = {"code": 40402, "msg": "empty pool", "data": None}
+    aio_mock.post("http://127.0.0.1:8001/api/v1/ips/acquire", payload=empty_pool, status=200, repeat=True)
+    app = _proxy_app(registry)
+    async with running_app(app) as client:
+        r1 = await client.post("/api/v1/site_a/ips/acquire")
+        r2 = await client.post("/api/v1/site_a/ips/acquire")
+        resp = await client.get("/api/v1/health")
+    assert r1.json() == empty_pool
+    assert r2.json() == empty_pool
+    stats = resp.json()["data"]["stats"]
+    assert stats["calls_by_site"] == {"site_a": 2}
+    assert stats["errors"] == {"40402": 2}
+
+
 # PX-RT-002 /{site}/status 透传
 async def test_status_passthrough(running_app, registry, aio_mock):
     aio_mock.get("http://127.0.0.1:8001/api/v1/status", payload=STUB_OK, status=200)
