@@ -9,5 +9,8 @@ def test_config_import_and_load():
     assert settings.site.name == "site_a"
     assert settings.sync.interval == 3.0
     assert settings.test.latency_threshold_ms == 2000
+    assert settings.test.concurrency == 20
+    assert settings.test.workers == 2
+    assert settings.test.buffer == 20
     assert settings.revalidate_interval == 60.0
     assert settings.ttl_sweep_interval == 5.0

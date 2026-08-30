@@ -183,6 +183,33 @@ def tester_factory():
 
 
 # ---------------------------------------------------------------------------
+# SyncTask 排空辅助（拉取与测试解耦后，_sync_once 只入队）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def drain_sync():
+    """启动一个测试 worker 并排空 SyncTask 队列。
+
+    ``drain_sync(task)``：启动 worker 后等待全部已入队批次测试完成；
+    ``drain_sync(task, once=True)``：先执行一次 ``_sync_once()``（拉取+入队）
+    再排空。结束前取消并回收 worker。
+    """
+
+    async def _drain(task, *, once: bool = False):
+        worker = asyncio.create_task(task._run_worker())
+        try:
+            if once:
+                await task._sync_once()
+            await task.join()
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    return _drain
+
+
+# ---------------------------------------------------------------------------
 # 运行中的应用（单事件循环，供 routes/集成测试）
 # ---------------------------------------------------------------------------
 

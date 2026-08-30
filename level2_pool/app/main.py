@@ -93,7 +93,13 @@ def create_app(
                 settings.level1.base_url, active_session, timeout=settings.sync.timeout
             )
             active_sync = active_sync or SyncTask(
-                client, active_tester, pool, stats, interval=settings.sync.interval
+                client,
+                active_tester,
+                pool,
+                stats,
+                interval=settings.sync.interval,
+                buffer_size=settings.test.buffer,
+                test_workers=settings.test.workers,
             )
             background = [
                 asyncio.create_task(active_sync.run()),

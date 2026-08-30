@@ -105,7 +105,7 @@ async def test_integration_closed_loop(mock_level1_server, running_app, level1_s
         assert count["free_total"] == 2
 
 
-async def test_integration_restart_recovers(mock_level1_server, level1_state):
+async def test_integration_restart_recovers(mock_level1_server, level1_state, drain_sync):
     """一级池重启（id 归零）→ 空响应触发全量重拉、服务无感恢复。"""
     level1_state.add(3)  # ids 1,2,3
     session = aiohttp.ClientSession()
@@ -114,7 +114,7 @@ async def test_integration_restart_recovers(mock_level1_server, level1_state):
         pool = Level2Pool()
         stats = ServiceStats()
         task = SyncTask(client, _always_pass_tester(), pool, stats, interval=0.01)
-        await task._sync_once()
+        await drain_sync(task, once=True)
         assert task.last_synced_id == 3
         assert len(pool.all()) == 3
 
@@ -146,7 +146,7 @@ async def test_integration_restart_recovers(mock_level1_server, level1_state):
             ]
         )
         # after(3) → 空 → 全量重拉 ids 1,2
-        await task._sync_once()
+        await drain_sync(task, once=True)
         assert task.last_synced_id == 2
         assert len(pool.all()) == 5  # 旧 3 条保留 + 新 2 条
         assert leased.leased is True  # 租赁状态无感
@@ -183,7 +183,7 @@ async def test_integration_acquire_release_flow(mock_level1_server, running_app,
         assert acq4["code"] == 0
 
 
-async def test_integration_three_tasks_concurrent(mock_level1_server, level1_state):
+async def test_integration_three_tasks_concurrent(mock_level1_server, level1_state, drain_sync):
     """同步 + 复验 + TTL 三任务并发运行，互不干扰、计数一致。"""
     level1_state.add(3, ttl=120.0)
     session = aiohttp.ClientSession()
@@ -197,6 +197,7 @@ async def test_integration_three_tasks_concurrent(mock_level1_server, level1_sta
         ttl = TtlSweeper(pool, interval=0.02, sleep_fn=_SleepRecorder(stop_after=4))
         results = await asyncio.gather(sync.run(), reval.run(), ttl.run(), return_exceptions=True)
         assert all(isinstance(r, Exception) for r in results)
+        await drain_sync(sync)  # 排空同步入队的批次后再校验计数
         # 计数一致：每个被拉取的都通过站点测试入池；池内为全部不同记录
         assert stats.total_pulled == stats.total_entered
         assert stats.total_pulled >= 3

@@ -18,6 +18,8 @@ test:
   latency_threshold_ms: 2000
   connect_timeout: 3.0
   concurrency: 20
+  workers: 2  # 缺省自动 = max(1, concurrency//10)
+  buffer: 20
 
 revalidate_interval: 60.0
 ttl_sweep_interval: 5.0

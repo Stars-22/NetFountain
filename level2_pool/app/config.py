@@ -34,6 +34,8 @@ class TestConfig(BaseModel):
     latency_threshold_ms: int = 2000
     connect_timeout: float = 3.0
     concurrency: int = 20
+    workers: int | None = None  # None=自动 max(1, concurrency//10)，显式值截断上限
+    buffer: int = 20
 
 
 class Level2Settings(BaseSettings):

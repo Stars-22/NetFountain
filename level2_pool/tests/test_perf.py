@@ -50,7 +50,7 @@ async def test_perf_100_concurrent_acquire(pool, make_l2, make_ip):
 
 
 @pytest.mark.perf
-async def test_perf_sustained_sync_no_backlog(mock_session):
+async def test_perf_sustained_sync_no_backlog(mock_session, drain_sync):
     session, m = mock_session
     m.get(f"{BASE}/api/v1/ips", payload=_payload(*(_ip_dict(i) for i in range(1, 101))))
     for tick in range(1, 6):
@@ -72,9 +72,9 @@ async def test_perf_sustained_sync_no_backlog(mock_session):
     )
     task = SyncTask(client, tester, pool, stats, interval=0.01)
     start = time.perf_counter()
-    await task._sync_once()
-    for _ in range(5):
+    for _ in range(6):
         await task._sync_once()
+    await drain_sync(task)  # 排空全部批次后统计
     elapsed = time.perf_counter() - start
     assert pool.stats().total == 600
     assert stats.total_pulled == 600
