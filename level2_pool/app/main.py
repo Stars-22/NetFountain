@@ -104,10 +104,10 @@ def create_app(
             background = [
                 asyncio.create_task(active_sync.run()),
                 asyncio.create_task(
-                    RevalidateTask(pool, active_tester, settings.revalidate_interval).run()
+                    RevalidateTask(pool, active_tester, settings.revalidate_interval, stats).run()
                 ),
                 asyncio.create_task(
-                    TtlSweeper(pool, settings.ttl_sweep_interval).run()
+                    TtlSweeper(pool, settings.ttl_sweep_interval, stats).run()
                 ),
             ]
         app.state.sync_task = active_sync

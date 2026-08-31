@@ -22,6 +22,11 @@ class RegistryConfig(BaseModel):
     reload_interval: float = 60.0
 
 
+class Level1Config(BaseModel):
+    base_url: str = "http://127.0.0.1:8000"
+    timeout: float = 5.0
+
+
 class DispatchConfig(BaseModel):
     timeout: float = 10.0
 
@@ -31,6 +36,7 @@ class ProxySettings(BaseSettings):
 
     service: ServiceConfig = ServiceConfig()
     registry: RegistryConfig = RegistryConfig()
+    level1: Level1Config = Level1Config()
     dispatch: DispatchConfig = DispatchConfig()
 
 

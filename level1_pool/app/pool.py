@@ -36,6 +36,10 @@ class ServiceStats:
     total_entered: int = 0
     api_call_count: int = 0
     next_id: int = 0
+    pull_failures: int = 0
+    test_failures: int = 0
+    ttl_sweep_failures: int = 0
+    drops: int = 0
 
 
 class Level1Pool:

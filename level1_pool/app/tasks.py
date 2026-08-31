@@ -88,6 +88,7 @@ class PullTask:
                     raise
                 except Exception:
                     logger.exception("pull tick failed")
+                    self._stats.pull_failures += 1
                 elapsed = time.monotonic() - start
                 await self._sleep(max(0.0, self._pull_interval - elapsed))
         finally:
@@ -108,6 +109,7 @@ class PullTask:
                 raise
             except Exception:
                 logger.exception("test batch failed")
+                self._stats.test_failures += 1
             finally:
                 self._queue.task_done()
 
@@ -122,6 +124,7 @@ class PullTask:
             except asyncio.QueueEmpty:
                 return
             self._drops += 1
+            self._stats.drops += 1
             logger.warning(
                 "test queue full, dropped oldest pending batch (drops=%d)",
                 self._drops,
@@ -143,10 +146,12 @@ class TtlSweeper:
         self,
         pool: Level1Pool,
         interval: float,
+        stats: ServiceStats | None = None,
         sleep_fn: SleepFn | None = None,
     ):
         self._pool = pool
         self._interval = interval
+        self._stats = stats
         self._sleep = sleep_fn or asyncio.sleep
 
     async def run(self) -> None:
@@ -158,3 +163,5 @@ class TtlSweeper:
                 raise
             except Exception:
                 logger.exception("ttl sweep failed")
+                if self._stats is not None:
+                    self._stats.ttl_sweep_failures += 1

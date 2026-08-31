@@ -76,6 +76,8 @@
 | `counts` | dict | 各协议数量 `{http, https, socks4, socks5}` |
 | `api_call_count` | int | 累计 `/api/v1` 调用次数 |
 | `next_id` | int | 全局自增 ID 水位 |
+| `errors` | object | 错误计数 `{pull_failures, test_failures, ttl_sweep_failures}` |
+| `drops` | int | 因队满被丢弃的待测批次累计数 |
 
 **示例**：
 
@@ -89,7 +91,9 @@
     "pool_size": 500,
     "counts": {"http": 300, "https": 100, "socks4": 50, "socks5": 50},
     "api_call_count": 42,
-    "next_id": 812
+    "next_id": 812,
+    "errors": {"pull_failures": 3, "test_failures": 0, "ttl_sweep_failures": 0},
+    "drops": 0
   }
 }
 ```
@@ -212,6 +216,8 @@ GET /api/v1/ips/after/100
 | `total_entered` | int | 通过站点连通测试入池总数 |
 | `api_call_count` | int | 累计 `/api/v1` 调用次数 |
 | `last_synced_id` | int\|null | 增量同步水位 |
+| `errors` | object | 错误计数 `{sync_failures, test_failures, revalidate_failures, ttl_sweep_failures, empty_acquires}` |
+| `drops` | int | 因队满被丢弃的待测批次累计数 |
 | `pool_stats` | object | 池统计，见下 |
 
 `pool_stats` 字段：
@@ -233,6 +239,9 @@ GET /api/v1/ips/after/100
   "data": {
     "uptime": 100.0, "total_pulled": 800, "total_entered": 600,
     "api_call_count": 10, "last_synced_id": 799,
+    "errors": {"sync_failures": 1, "test_failures": 0, "revalidate_failures": 0,
+               "ttl_sweep_failures": 0, "empty_acquires": 0},
+    "drops": 0,
     "pool_stats": {
       "total": 600,
       "by_proto": {"http": 300, "https": 150, "socks4": 80, "socks5": 70},
@@ -373,7 +382,7 @@ GET /api/v1/ips/after/100
 
 ### 4.1 GET /api/v1/health
 
-网关存活检查，返回当前路由表与代理层自身运行统计（不访问上游）。
+网关存活检查，返回当前路由表、代理层自身运行统计，并实时聚合一级池与各站点二级池的 `/status` 信息（`pools`）。
 
 **请求**：无参数、无请求体。
 
@@ -386,6 +395,7 @@ GET /api/v1/ips/after/100
 | `uptime` | float | 自启动以来的运行秒数 |
 | `stats` | object | 代理层 API 被调用统计（见下） |
 | `sites` | array | 站点列表，每项 `{name, base_url, target_url}` |
+| `pools` | object | 实时聚合的池状态（见下） |
 
 `stats` 字段：
 
@@ -394,7 +404,14 @@ GET /api/v1/ips/after/100
 | `total_calls` | int | 代理层 API 被调用总次数（含 health 自身） |
 | `calls_by_ip` | object | 按来源客户端 IP 的调用次数 `{ip: count}` |
 | `calls_by_site` | object | 按站点透传转发次数 `{site: count}` |
-| `errors` | object | 错误响应次数 `{code: count}`，含代理层传输错误（`40400` / `50200`）与上游业务错误码（如 `40402` 空池）；代理层仅统计时读取上游 `code`，响应仍原样透传 |
+| `errors` | object | 代理层自身错误次数 `{code: count}`，仅含代理层传输错误（`40400` 站点未配置 / `50200` 上游不可达）；**不统计**任何二级池业务错误码（如 `40402` 空池，由二级池自身 `/status` 的 `errors` 统计） |
+
+`pools` 字段（health 时实时请求一级池与各站点二级池 `/status`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `pools.level1` | object | `{base_url, status}`；`status` 为一级池 `/status` 的 `data`，不可达时为 `{error}` |
+| `pools.sites` | array | 各站点 `{name, base_url, status}`；`status` 为该站点二级池 `/status` 的 `data`，不可达时为 `{error}` |
 
 **示例**：
 
@@ -414,7 +431,19 @@ GET /api/v1/ips/after/100
     "sites": [
       { "name": "site_a", "base_url": "http://127.0.0.1:8001", "target_url": null },
       { "name": "site_b", "base_url": "http://127.0.0.1:8002", "target_url": null }
-    ]
+    ],
+    "pools": {
+      "level1": {
+        "base_url": "http://127.0.0.1:8000",
+        "status": { "pool_size": 500, "total_pulled": 1000 }
+      },
+      "sites": [
+        { "name": "site_a", "base_url": "http://127.0.0.1:8001",
+          "status": { "total": 600, "free_total": 400 } },
+        { "name": "site_b", "base_url": "http://127.0.0.1:8002",
+          "status": { "error": "unreachable" } }
+      ]
+    }
   }
 }
 ```

@@ -272,6 +272,7 @@ async def test_sync_error_does_not_affect_pool(mock_session, drain_sync):
     assert len(pool.all()) == 3
     assert task.last_synced_id == 3
     assert stats.total_pulled == 3
+    assert stats.sync_failures >= 1
 
 
 async def test_sync_task_run_interval(mock_session, drain_sync):
@@ -388,6 +389,7 @@ async def test_sync_worker_exception_isolation(make_ip, make_l2):
         task._enqueue([make_l2(make_ip(2))])
         await task.join()
         assert task._stats.total_entered == 1
+        assert task._stats.test_failures == 1
         assert [r.ip for r in task._pool.all()] == ["10.0.0.2"]
     finally:
         worker.cancel()
@@ -410,6 +412,7 @@ async def test_sync_worker_drop_oldest_when_full(make_ip, make_l2):
         await task.join()
         assert sorted(r.ip for r in task._pool.all()) == ["10.0.0.3", "10.0.0.4"]
         assert task.drops == 2
+        assert task._stats.drops == 2
         assert task._stats.total_entered == 2
     finally:
         worker.cancel()

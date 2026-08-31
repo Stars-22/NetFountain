@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from app.pool import Level2Pool
+from app.pool import Level2Pool, ServiceStats
 from app.tasks import RevalidateTask, SyncTask, TtlSweeper
 
 
@@ -89,11 +89,15 @@ async def test_revalidate_exception_isolation(pool, make_l2, make_ip):
             return records
 
     flaky = _FlakyTester()
-    task = RevalidateTask(pool, flaky, interval=0.01, sleep_fn=_SleepRecorder(stop_after=3))
+    stats = ServiceStats()
+    task = RevalidateTask(
+        pool, flaky, interval=0.01, stats=stats, sleep_fn=_SleepRecorder(stop_after=3)
+    )
     with pytest.raises(_StopLoop):
         await task.run()
     assert flaky.calls == 2
     assert len(pool.all()) == 3  # 第一次整批抛错被隔离，记录不受影响
+    assert stats.revalidate_failures == 1
 
 
 async def test_revalidate_cancellation(pool, tester_factory):
@@ -152,11 +156,13 @@ async def test_ttl_sweeper_exception_isolation(pool, make_l2, make_ip):
         return await original(now_)
 
     pool.sweep_ttl = _flaky
-    sweeper = TtlSweeper(pool, 5.0, sleep_fn=_SleepRecorder(stop_after=3))
+    stats = ServiceStats()
+    sweeper = TtlSweeper(pool, 5.0, stats, sleep_fn=_SleepRecorder(stop_after=3))
     with pytest.raises(_StopLoop):
         await sweeper.run()
     assert len(calls) == 2
     assert [r.ip for r in pool.all()] == ["10.0.0.2"]
+    assert stats.ttl_sweep_failures == 1
 
 
 async def test_ttl_sweeper_cancellation(pool):

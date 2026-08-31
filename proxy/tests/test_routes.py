@@ -32,7 +32,23 @@ async def _run(registry, client, method, path, **kwargs):
 
 
 # PX-RT-001 /health
-async def test_health(running_app, registry):
+async def test_health(running_app, registry, aio_mock):
+    level1_status = {"pool_size": 7, "total_pulled": 100}
+    aio_mock.get(
+        "http://127.0.0.1:8000/api/v1/status",
+        payload={"code": 0, "msg": "ok", "data": level1_status},
+        status=200,
+    )
+    aio_mock.get(
+        "http://127.0.0.1:8001/api/v1/status",
+        payload={"code": 0, "msg": "ok", "data": {"total": 3}},
+        status=200,
+    )
+    aio_mock.get(
+        "http://127.0.0.1:8002/api/v1/status",
+        payload={"code": 0, "msg": "ok", "data": {"total": 5}},
+        status=200,
+    )
     app = _proxy_app(registry)
     async with running_app(app) as client:
         resp = await client.get("/api/v1/health")
@@ -51,13 +67,26 @@ async def test_health(running_app, registry):
     by_name = {s["name"]: s for s in sites}
     assert by_name["site_a"]["base_url"] == "http://127.0.0.1:8001"
     assert by_name["site_a"]["target_url"] == "https://www.example.com"
+    pools = data["pools"]
+    assert pools["level1"]["base_url"] == "http://127.0.0.1:8000"
+    assert pools["level1"]["status"] == level1_status
+    pool_sites = {s["name"]: s for s in pools["sites"]}
+    assert set(pool_sites) == {"site_a", "site_b"}
+    assert pool_sites["site_a"]["status"] == {"total": 3}
+    assert pool_sites["site_b"]["status"] == {"total": 5}
 
 
-async def test_health_empty_registry(running_app, tmp_path):
+async def test_health_empty_registry(running_app, tmp_path, aio_mock):
     import yaml
 
     from app.registry import Registry
 
+    level1_status = {"pool_size": 0}
+    aio_mock.get(
+        "http://127.0.0.1:8000/api/v1/status",
+        payload={"code": 0, "msg": "ok", "data": level1_status},
+        status=200,
+    )
     p = tmp_path / "empty.yaml"
     p.write_text(yaml.safe_dump({"sites": []}, sort_keys=False), encoding="utf-8")
     reg = Registry(route_file=str(p))
@@ -65,7 +94,47 @@ async def test_health_empty_registry(running_app, tmp_path):
     app = _proxy_app(reg)
     async with running_app(app) as client:
         resp = await client.get("/api/v1/health")
-    assert resp.json()["data"]["sites"] == []
+    data = resp.json()["data"]
+    assert data["sites"] == []
+    assert data["pools"]["sites"] == []
+    assert data["pools"]["level1"]["status"] == level1_status
+
+
+async def test_health_level1_unreachable(running_app, registry, aio_mock):
+    aio_mock.get(
+        "http://127.0.0.1:8000/api/v1/status",
+        exception=aiohttp.ClientConnectionError("down"),
+    )
+    app = _proxy_app(registry)
+    async with running_app(app) as client:
+        resp = await client.get("/api/v1/health")
+    assert resp.status_code == 200
+    level1 = resp.json()["data"]["pools"]["level1"]
+    assert "error" in level1["status"]
+
+
+async def test_health_site_unreachable_isolated(running_app, registry, aio_mock):
+    aio_mock.get(
+        "http://127.0.0.1:8000/api/v1/status",
+        payload={"code": 0, "msg": "ok", "data": {"pool_size": 1}},
+        status=200,
+    )
+    aio_mock.get(
+        "http://127.0.0.1:8001/api/v1/status",
+        exception=aiohttp.ClientConnectionError("down"),
+    )
+    aio_mock.get(
+        "http://127.0.0.1:8002/api/v1/status",
+        payload={"code": 0, "msg": "ok", "data": {"total": 9}},
+        status=200,
+    )
+    app = _proxy_app(registry)
+    async with running_app(app) as client:
+        resp = await client.get("/api/v1/health")
+    assert resp.json()["code"] == 0
+    pool_sites = {s["name"]: s for s in resp.json()["data"]["pools"]["sites"]}
+    assert "error" in pool_sites["site_a"]["status"]
+    assert pool_sites["site_b"]["status"] == {"total": 9}
 
 
 async def test_health_stats_after_passthrough(running_app, registry, aio_mock):
@@ -97,8 +166,8 @@ async def test_health_stats_errors(running_app, registry, aio_mock):
     assert stats["calls_by_site"] == {}
 
 
-# 上游业务错误（HTTP 200 + code=40402 空池）计入 errors，响应仍原样透传
-async def test_business_error_counted_and_passthrough(running_app, registry, aio_mock):
+# 上游业务错误（HTTP 200 + code=40402 空池）不统计进代理 errors，响应仍原样透传
+async def test_business_error_not_counted_and_passthrough(running_app, registry, aio_mock):
     empty_pool = {"code": 40402, "msg": "empty pool", "data": None}
     aio_mock.post("http://127.0.0.1:8001/api/v1/ips/acquire", payload=empty_pool, status=200, repeat=True)
     app = _proxy_app(registry)
@@ -110,7 +179,7 @@ async def test_business_error_counted_and_passthrough(running_app, registry, aio
     assert r2.json() == empty_pool
     stats = resp.json()["data"]["stats"]
     assert stats["calls_by_site"] == {"site_a": 2}
-    assert stats["errors"] == {"40402": 2}
+    assert stats["errors"] == {}
 
 
 # PX-RT-002 /{site}/status 透传

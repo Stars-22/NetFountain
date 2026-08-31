@@ -184,6 +184,10 @@ registry:
   route_url: ""                          # 或远端路由表 URL（两者二选一，URL 优先）
   reload_interval: 60.0                  # 路由表热更新周期（秒）
 
+level1:
+  base_url: http://127.0.0.1:8000        # 一级池地址（供 /health 实时聚合一级池 /status）
+  timeout: 5.0                           # 到一级池的 /status 拉取超时（秒）
+
 dispatch:
   timeout: 10.0                          # 到二级池的透传超时（秒）
 
@@ -201,6 +205,7 @@ sites:                                   # 站点路由表：site → 二级池�
 - 路由表有两种来源：本地文件（`route_file`）或远端 URL（`route_url`）。`route_file` 相对路径基于项目根目录解析；`route_url` 便于集中管理多机路由。
 - 代理层启动时加载路由表，之后每 `reload_interval` 秒**热更新**一次；更新失败保留旧表。**新增站点只需编辑路由表，无需重启代理层**（等待一个重载周期生效）。
 - `sites[].base_url` 指向对应二级池进程地址；多机部署时填二级池机器 IP。
+- `level1.base_url` 指向一级池进程地址，供代理层 `/health` 实时聚合一级池状态；多机部署时填一级池机器 IP。
 
 ## 6. 启动服务
 
@@ -251,20 +256,20 @@ uvicorn app.main:app --app-dir proxy --host 0.0.0.0 --port 9000
 启动后用浏览器或 `curl` 做冒烟健康检查（仅检查服务存活，不涉及业务调用）：
 
 ```bash
-# 代理层健康检查（含当前已加载的路由表）
+# 代理层健康检查（含当前已加载的路由表 + 实时聚合的一级/二级池状态）
 curl http://<proxy-host>:9000/api/v1/health
 
-# 一级池状态（含池大小、拉取统计）
+# 一级池状态（含池大小、拉取统计、错误计数）
 curl http://<level1-host>:8000/api/v1/status
 
-# 二级池状态（含池统计、最近同步 id）
+# 二级池状态（含池统计、最近同步 id、错误计数）
 curl http://<level2-host>:8001/api/v1/status
 ```
 
 成功标准：
 
 - 各服务返回 `{"code":0, ...}`，`code=0` 表示正常。
-- 代理层 `/api/v1/health` 的 `data.sites` 中能看到配置的全部站点，`data.started_at` / `data.stats` 展示代理层启动时间与 API 被调用次数。
+- 代理层 `/api/v1/health` 的 `data.sites` 中能看到配置的全部站点，`data.started_at` / `data.stats` 展示代理层启动时间与 API 被调用次数，`data.pools.level1` 与 `data.pools.sites` 展示实时聚合的一级池 / 各站点二级池状态。
 - 一级池 `status` 的 `pool_size` 随时间增长（供应商可用时）。
 - 二级池 `status` 的 `pool_stats.total` 随时间增长，`last_synced_id` 持续前进（说明与一级池同步正常）。
 

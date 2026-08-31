@@ -185,25 +185,28 @@ async def test_pull_no_api_key_omits_param(provider_cfg, provider_request_url, m
     assert await provider.pull(10) == []
 
 
-async def test_pull_500_returns_empty(provider_cfg, provider_request_url, mock_session):
+async def test_pull_500_raises(provider_cfg, provider_request_url, mock_session):
     session, m = mock_session
     m.get(provider_request_url(), status=500, body=b"boom")
     provider = DefaultHttpProvider(provider_cfg, session)
-    assert await provider.pull(10) == []
+    with pytest.raises(aiohttp.ClientResponseError):
+        await provider.pull(10)
 
 
-async def test_pull_timeout_returns_empty(provider_cfg, provider_request_url, mock_session):
+async def test_pull_timeout_raises(provider_cfg, provider_request_url, mock_session):
     session, m = mock_session
     m.get(provider_request_url(), exception=asyncio.TimeoutError())
     provider = DefaultHttpProvider(provider_cfg, session)
-    assert await provider.pull(10) == []
+    with pytest.raises(asyncio.TimeoutError):
+        await provider.pull(10)
 
 
-async def test_pull_connection_error_returns_empty(provider_cfg, provider_request_url, mock_session):
+async def test_pull_connection_error_raises(provider_cfg, provider_request_url, mock_session):
     session, m = mock_session
     m.get(provider_request_url(), exception=aiohttp.ClientConnectionError("refused"))
     provider = DefaultHttpProvider(provider_cfg, session)
-    assert await provider.pull(10) == []
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await provider.pull(10)
 
 
 async def test_pull_cancelled_rethrows(provider_cfg, provider_request_url, mock_session):
@@ -214,11 +217,12 @@ async def test_pull_cancelled_rethrows(provider_cfg, provider_request_url, mock_
         await provider.pull(10)
 
 
-async def test_pull_invalid_json_returns_empty(provider_cfg, provider_request_url, mock_session):
+async def test_pull_invalid_json_raises(provider_cfg, provider_request_url, mock_session):
     session, m = mock_session
     m.get(provider_request_url(), status=200, body="not json{", content_type="application/json")
     provider = DefaultHttpProvider(provider_cfg, session)
-    assert await provider.pull(10) == []
+    with pytest.raises(ValueError):
+        await provider.pull(10)
 
 
 async def test_close_idempotent(mock_session, provider_cfg):
@@ -352,27 +356,30 @@ def test_http91_protocol_socks(http91_cfg):
     assert ips[0].protocol == Protocol.SOCKS5
 
 
-async def test_http91_pull_500_returns_empty(mock_session, http91_cfg, http91_request_url):
+async def test_http91_pull_500_raises(mock_session, http91_cfg, http91_request_url):
     session, m = mock_session
     m.get(http91_request_url(), status=500, body=b"boom")
     provider = Http91Provider(http91_cfg, session)
-    assert await provider.pull(10) == []
+    with pytest.raises(aiohttp.ClientResponseError):
+        await provider.pull(10)
 
 
-async def test_http91_pull_timeout_returns_empty(mock_session, http91_cfg, http91_request_url):
+async def test_http91_pull_timeout_raises(mock_session, http91_cfg, http91_request_url):
     session, m = mock_session
     m.get(http91_request_url(), exception=asyncio.TimeoutError())
     provider = Http91Provider(http91_cfg, session)
-    assert await provider.pull(10) == []
+    with pytest.raises(asyncio.TimeoutError):
+        await provider.pull(10)
 
 
-async def test_http91_pull_connection_error_returns_empty(
+async def test_http91_pull_connection_error_raises(
     mock_session, http91_cfg, http91_request_url
 ):
     session, m = mock_session
     m.get(http91_request_url(), exception=aiohttp.ClientConnectionError("refused"))
     provider = Http91Provider(http91_cfg, session)
-    assert await provider.pull(10) == []
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await provider.pull(10)
 
 
 async def test_http91_pull_cancelled_rethrows(

@@ -11,7 +11,8 @@
 
 - ``protocol`` 缺省视为 http；``region``/``ttl`` 可空；
 - 返回数量不超过请求的 ``count``；
-- 网络/解析异常仅记日志并返回空列表。
+- 网络/超时/HTTP 错误/解析异常抛出（由 PullTask 计入 ``pull_failures``）；
+  成功（含空结果）正常返回列表。
 
 扩展性：新增供应商只需「继承 BaseProvider + @register("名字")」，主流程零改动。
 """
@@ -112,7 +113,7 @@ class DefaultHttpProvider(BaseProvider):
             OSError,
         ) as exc:
             logger.warning("pull from %r failed: %s", self.cfg.api_url, exc)
-            return []
+            raise
 
     def _parse(self, payload: Any, count: int) -> list[ProviderIp]:
         if not isinstance(payload, dict):
@@ -188,7 +189,7 @@ class Http91Provider(BaseProvider):
     - 业务编号/密钥分别来自 ``cfg.trade_no`` / ``cfg.api_key``；
     - ``num`` 取请求的 ``count``，``time=1`` 使结果携带 ``expire_time``；
     - ``expire_time`` 为绝对时间，换算为剩余秒数写入 ``ProviderIp.ttl``；
-    - ``code != 0`` 或解析异常仅记日志并返回空列表。
+    - ``code != 0`` 仅记日志并返回空列表；网络/超时/HTTP/解析异常抛出。
     """
 
     _EXPIRE_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M")
@@ -222,7 +223,7 @@ class Http91Provider(BaseProvider):
             OSError,
         ) as exc:
             logger.warning("pull from %r failed: %s", self.cfg.api_url, exc)
-            return []
+            raise
 
     def _parse(self, payload: Any, count: int, now: float | None = None) -> list[ProviderIp]:
         if not isinstance(payload, dict):

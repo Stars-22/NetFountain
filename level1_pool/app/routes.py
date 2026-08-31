@@ -35,11 +35,12 @@ def _records_to_list(records: list[IpRecord]) -> list[dict]:
 async def status(request: Request):
     pool = request.app.state.pool
     counts = pool.counts()
+    stats = request.app.state.stats
     return ok(
         {
             "uptime": round(time.time() - request.app.state.start_time, 3),
-            "total_pulled": request.app.state.stats.total_pulled,
-            "total_entered": request.app.state.stats.total_entered,
+            "total_pulled": stats.total_pulled,
+            "total_entered": stats.total_entered,
             "total_duplicates": request.app.state.pool.duplicates,
             "pool_size": counts.total,
             "counts": {
@@ -50,6 +51,12 @@ async def status(request: Request):
             },
             "api_call_count": getattr(request.app.state, "api_call_count", 0),
             "next_id": pool.next_id,
+            "errors": {
+                "pull_failures": stats.pull_failures,
+                "test_failures": stats.test_failures,
+                "ttl_sweep_failures": stats.ttl_sweep_failures,
+            },
+            "drops": stats.drops,
         }
     )
 

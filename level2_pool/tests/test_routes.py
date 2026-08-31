@@ -55,11 +55,21 @@ async def test_status_fields_complete(running_app, make_l2, make_ip):
         "api_call_count",
         "last_synced_id",
         "pool_stats",
+        "errors",
+        "drops",
     }
     assert data["total_pulled"] == 100
     assert data["total_entered"] == 42
     assert data["last_synced_id"] == 7
     assert data["api_call_count"] >= 1
+    assert data["errors"] == {
+        "sync_failures": 0,
+        "test_failures": 0,
+        "revalidate_failures": 0,
+        "ttl_sweep_failures": 0,
+        "empty_acquires": 0,
+    }
+    assert data["drops"] == 0
     ps = data["pool_stats"]
     assert ps["total"] == 5
     assert ps["by_proto"] == {"http": 2, "https": 1, "socks4": 1, "socks5": 1}
@@ -154,6 +164,16 @@ async def test_acquire_all_leased_returns_emptypool(running_app, make_l2, make_i
     async with running_app(app) as client:
         resp = await client.post("/api/v1/ips/acquire")
     assert resp.json()["code"] == 40402
+    assert app.state.stats.empty_acquires == 1
+
+
+async def test_empty_acquire_counted_in_status(running_app):
+    app = _make_app()
+    async with running_app(app) as client:
+        await client.post("/api/v1/ips/acquire")
+        await client.post("/api/v1/ips/acquire")
+        resp = await client.get("/api/v1/status")
+    assert resp.json()["data"]["errors"]["empty_acquires"] == 2
 
 
 async def test_release_success(running_app, make_l2, make_ip):

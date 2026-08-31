@@ -170,6 +170,8 @@ class SyncTask:
                 raise
             except Exception:
                 logger.exception("sync test batch failed")
+                if self._stats is not None:
+                    self._stats.test_failures += 1
             finally:
                 self._queue.task_done()
 
@@ -184,6 +186,8 @@ class SyncTask:
             except asyncio.QueueEmpty:
                 return
             self._drops += 1
+            if self._stats is not None:
+                self._stats.drops += 1
             logger.warning(
                 "sync test queue full, dropped oldest pending batch (drops=%d)",
                 self._drops,
@@ -216,6 +220,8 @@ class SyncTask:
                     raise
                 except Exception:
                     logger.exception("sync tick failed")
+                    if self._stats is not None:
+                        self._stats.sync_failures += 1
                 elapsed = time.monotonic() - start
                 await self._sleep(max(0.0, self._interval - elapsed))
         finally:

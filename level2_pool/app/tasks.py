@@ -25,11 +25,13 @@ class RevalidateTask:
         pool: object,
         tester: object,
         interval: float = 60.0,
+        stats: object | None = None,
         sleep_fn: SleepFn | None = None,
     ) -> None:
         self._pool = pool
         self._tester = tester
         self._interval = interval
+        self._stats = stats
         self._sleep = sleep_fn or asyncio.sleep
 
     async def run(self) -> None:
@@ -46,6 +48,8 @@ class RevalidateTask:
                 raise
             except Exception:
                 logger.exception("revalidate tick failed")
+                if self._stats is not None:
+                    self._stats.revalidate_failures += 1
 
 
 class TtlSweeper:
@@ -55,10 +59,12 @@ class TtlSweeper:
         self,
         pool: object,
         interval: float = 5.0,
+        stats: object | None = None,
         sleep_fn: SleepFn | None = None,
     ) -> None:
         self._pool = pool
         self._interval = interval
+        self._stats = stats
         self._sleep = sleep_fn or asyncio.sleep
 
     async def run(self) -> None:
@@ -70,3 +76,5 @@ class TtlSweeper:
                 raise
             except Exception:
                 logger.exception("ttl sweep failed")
+                if self._stats is not None:
+                    self._stats.ttl_sweep_failures += 1

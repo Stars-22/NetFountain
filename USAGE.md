@@ -184,7 +184,7 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/3/release
 
 `GET /api/v1/health`
 
-返回代理层自身状态（启动时间、API 被调用次数等）与当前已加载的站点路由表（不含站点池数据）。
+返回代理层自身状态（启动时间、API 被调用次数等）、当前已加载的站点路由表，并实时聚合一级池与各站点二级池的 `/status` 状态（`pools`）。
 
 请求示例：
 
@@ -211,14 +211,28 @@ curl http://127.0.0.1:9000/api/v1/health
     "sites": [
       {"name": "site_a", "base_url": "http://127.0.0.1:8001", "target_url": "https://www.example.com"},
       {"name": "site_b", "base_url": "http://127.0.0.1:8002", "target_url": "https://www.example.org"}
-    ]
+    ],
+    "pools": {
+      "level1": {
+        "base_url": "http://127.0.0.1:8000",
+        "status": {"pool_size": 500, "total_pulled": 1000}
+      },
+      "sites": [
+        {"name": "site_a", "base_url": "http://127.0.0.1:8001",
+         "status": {"total": 20, "free_total": 15}},
+        {"name": "site_b", "base_url": "http://127.0.0.1:8002",
+         "status": {"error": "unreachable"}}
+      ]
+    }
   }
 }
 ```
 
-`started_at` 为代理层启动时间（ISO 8601 UTC），`uptime` 为运行秒数；`stats` 为代理层 API 被调用统计（`total_calls` 总次数、`calls_by_ip` 按来源客户端 IP、`calls_by_site` 按站点转发、`errors` 错误响应计数）。`errors` 除代理层传输错误（`40400` 站点未配置、`50200` 上游故障）外，还计入上游业务错误码（如 `40402` 空池）；代理层仅统计时读取上游 `code`，透传响应保持不变。统计为进程内累计，进程重启后归零。
+`started_at` 为代理层启动时间（ISO 8601 UTC），`uptime` 为运行秒数；`stats` 为代理层 API 被调用统计（`total_calls` 总次数、`calls_by_ip` 按来源客户端 IP、`calls_by_site` 按站点转发、`errors` 代理层自身错误计数）。`errors` 仅含代理层自身错误（`40400` 站点未配置、`50200` 上游故障），**不再统计**上游二级池业务错误码（如 `40402` 空池——该信息由二级池自身 `/status` 的 `errors.empty_acquires` 统计）。统计为进程内累计，进程重启后归零。
 
 `sites[].name` 即 `{site}` 取值；`target_url` 为该站点二级池连通性测试所面向的目标站点。
+
+`pools` 为 health 时实时请求的结果：`pools.level1` 是一级池 `/status` 的 `data`，`pools.sites` 是各站点二级池 `/status` 的 `data`（数组，按站点名对齐）；某下游不可达时该项 `status` 为 `{"error": ...}`，不影响整体 `code: 0`。
 
 ### 4.2 查询类端点
 
@@ -241,6 +255,11 @@ curl http://127.0.0.1:9000/api/v1/site_a/status
   "total_entered": 880,
   "api_call_count": 42,
   "last_synced_id": 137,
+  "errors": {
+    "sync_failures": 1, "test_failures": 0, "revalidate_failures": 0,
+    "ttl_sweep_failures": 0, "empty_acquires": 0
+  },
+  "drops": 0,
   "pool_stats": {
     "total": 20,
     "by_proto": {"http": 8, "https": 6, "socks4": 3, "socks5": 3},
@@ -259,7 +278,19 @@ curl http://127.0.0.1:9000/api/v1/site_a/status
 | `total_entered` | 通过站点连通测试并入池的累计数 |
 | `api_call_count` | 该站点累计被调用的次数 |
 | `last_synced_id` | 当前同步水位线（一级池记录 id） |
+| `errors` | 错误计数，见下 |
+| `drops` | 因队满被丢弃的待测批次累计数 |
 | `pool_stats` | 池内统计，见下表 |
+
+`errors` 字段：
+
+| 字段 | 说明 |
+|---|---|
+| `sync_failures` | 同步（从一级池拉取）失败次数 |
+| `test_failures` | 站点测试批次异常次数 |
+| `revalidate_failures` | 周期复验异常次数 |
+| `ttl_sweep_failures` | TTL 清扫异常次数 |
+| `empty_acquires` | `acquire` 遇空池（或全租赁）次数 |
 
 `pool_stats` 字段：
 

@@ -49,6 +49,14 @@ def _service_stats(request: Request) -> dict:
         "total_entered": stats.total_entered,
         "api_call_count": stats.api_call_count,
         "last_synced_id": stats.last_synced_id,
+        "errors": {
+            "sync_failures": stats.sync_failures,
+            "test_failures": stats.test_failures,
+            "revalidate_failures": stats.revalidate_failures,
+            "ttl_sweep_failures": stats.ttl_sweep_failures,
+            "empty_acquires": stats.empty_acquires,
+        },
+        "drops": stats.drops,
     }
 
 
@@ -73,6 +81,7 @@ async def ips(request: Request):
 async def acquire(request: Request):
     rec = await request.app.state.pool.acquire()
     if rec is None:
+        request.app.state.stats.empty_acquires += 1
         return err(ErrorCode.EMPTY_POOL, "empty pool: no free ip available")
     return ok(_record_to_dict(rec))
 

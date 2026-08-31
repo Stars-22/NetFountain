@@ -104,7 +104,7 @@ def create_app(
                     ).run()
                 ),
                 asyncio.create_task(
-                    TtlSweeper(pool, settings.ttl_sweep_interval).run()
+                    TtlSweeper(pool, settings.ttl_sweep_interval, stats).run()
                 ),
             ]
         try:

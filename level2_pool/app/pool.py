@@ -36,6 +36,12 @@ class ServiceStats:
     total_entered: int = 0
     api_call_count: int = 0
     last_synced_id: int | None = None
+    sync_failures: int = 0
+    test_failures: int = 0
+    revalidate_failures: int = 0
+    ttl_sweep_failures: int = 0
+    drops: int = 0
+    empty_acquires: int = 0
 
 
 class Level2Pool:

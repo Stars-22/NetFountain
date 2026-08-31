@@ -56,6 +56,8 @@ async def test_status_fields_complete(running_app):
         "counts",
         "api_call_count",
         "next_id",
+        "errors",
+        "drops",
     }
     assert data["total_pulled"] == 100
     assert data["total_entered"] == 42
@@ -64,6 +66,27 @@ async def test_status_fields_complete(running_app):
     assert data["next_id"] == 5
     assert data["uptime"] >= 0
     assert data["api_call_count"] >= 1
+    assert data["errors"] == {
+        "pull_failures": 0,
+        "test_failures": 0,
+        "ttl_sweep_failures": 0,
+    }
+    assert data["drops"] == 0
+
+
+async def test_status_errors_fields(running_app):
+    pool = Level1Pool(max_size=500)
+    stats = ServiceStats(pull_failures=3, test_failures=2, ttl_sweep_failures=1, drops=4)
+    app = _make_app(pool, stats)
+    async with running_app(app) as client:
+        resp = await client.get("/api/v1/status")
+    data = resp.json()["data"]
+    assert data["errors"] == {
+        "pull_failures": 3,
+        "test_failures": 2,
+        "ttl_sweep_failures": 1,
+    }
+    assert data["drops"] == 4
 
 
 async def test_status_uptime_uses_start_time(running_app):

@@ -94,6 +94,7 @@ async def test_pull_exception_does_not_stop_loop(make_ip):
     assert stats.total_entered == stats.total_pulled
     assert pool.size() + pool.duplicates == stats.total_entered
     assert 1 <= pool.size() <= stats.total_entered
+    assert stats.pull_failures == 1
 
 
 async def test_stats_total_pulled_and_entered(make_ip):
@@ -182,6 +183,7 @@ async def test_worker_exception_isolation(make_ip):
         task._enqueue([make_ip(2)])
         await task.join()
         assert stats.total_entered == 1
+        assert stats.test_failures == 1
         records = await pool.all()
         assert [r.id for r in records] == [0]
         assert [r.ip for r in records] == ["10.0.0.2"]
@@ -209,6 +211,7 @@ async def test_worker_drop_oldest_when_full(make_ip):
         assert sorted(r.ip for r in records) == ["10.0.0.3", "10.0.0.4"]
         assert stats.total_entered == 2
         assert task.drops == 2
+        assert stats.drops == 2
     finally:
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
@@ -454,6 +457,21 @@ async def test_ttl_sweeper_cancellation(make_ip):
     t.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t
+
+
+async def test_ttl_sweeper_failure_counted(make_ip):
+    pool = Level1Pool(max_size=100)
+    stats = ServiceStats()
+
+    async def _flaky_sweep(now_):
+        raise RuntimeError("boom")
+
+    pool.sweep_ttl = _flaky_sweep
+    sleep_rec = _SleepRecorder(stop_after=2)
+    sweeper = TtlSweeper(pool, 5.0, stats, sleep_fn=sleep_rec)
+    with pytest.raises(_StopLoop):
+        await sweeper.run()
+    assert stats.ttl_sweep_failures == 1
 
 
 async def test_ttl_sweeper_cancelled_during_sweep(make_ip):

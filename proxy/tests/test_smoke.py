@@ -7,5 +7,7 @@ def test_config_import_and_load():
     assert isinstance(settings, ProxySettings)
     assert settings.service.port == 9000
     assert settings.registry.route_file == "config/proxy_routes.yaml"
-    assert settings.registry.reload_interval == 60.0
+    assert settings.registry.reload_interval == 30.0
     assert settings.dispatch.timeout == 10.0
+    assert settings.level1.base_url == "http://127.0.0.1:8000"
+    assert settings.level1.timeout == 5.0
