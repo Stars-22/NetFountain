@@ -46,6 +46,29 @@ def _is_legal_proxy_reply(error: BaseException) -> bool:
     return code is not None and 400 <= code < 600
 
 
+def classify_test_error(error: BaseException) -> str:
+    """将测试异常归类为简短原因键，供批次汇总日志展示。
+
+    判定顺序依赖异常继承层级（已验证）：
+    - ``ProxyTimeoutError`` 是 ``TimeoutError``/``OSError`` 子类；
+    - ``ProxyConnectionError`` 是 ``OSError`` 子类；
+    - ``aiohttp.ClientConnectorError`` 是 ``OSError`` 子类；
+    - ``aiohttp.ServerTimeoutError`` 是 ``TimeoutError`` 子类。
+    因此先判超时、再判连接，最后才是代理协议/业务类异常。
+    """
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout"
+    if isinstance(error, (OSError, ConnectionError)):
+        return "connect"
+    if isinstance(error, (ProxyError, PySocksProxyError, ReplyError)):
+        return "proxy_reject"
+    if isinstance(error, ValueError):
+        return "invalid_proxy"
+    if isinstance(error, aiohttp.ClientError):
+        return "client_error"
+    return "exception"
+
+
 async def proxy_reachability_test(
     proxy_url: str,
     timeout: float = 3.0,
@@ -66,13 +89,25 @@ async def proxy_reachability_test(
     再发内层请求，会产生对可用代理的误判。
 
     返回 ``(ok, latency_ms)``。``session`` 参数仅保留以兼容旧签名，本实现
-    不再使用（握手直接经 python_socks 完成）。
+    不再使用（握手直接经 python_socks 完成）。需要失败原因时请使用
+    ``proxy_reachability_test_detailed``。
+    """
+    ok, latency, _ = await _proxy_reachability_impl(proxy_url, timeout)
+    return ok, latency
+
+
+async def _proxy_reachability_impl(
+    proxy_url: str, timeout: float = 3.0
+) -> tuple[bool, float, str | None]:
+    """``proxy_reachability_test`` 实现：额外返回失败原因键（成功为 None）。
+
+    原因键见 :func:`classify_test_error`，另含 ``proxy_reject``（代理协议拒绝）。
     """
     start = time.perf_counter()
     try:
         proxy_type, host, port, username, password = parse_proxy_url(proxy_url)
     except (ValueError, TypeError):
-        return False, 0.0
+        return False, 0.0, "invalid_proxy"
     proxy = Proxy(
         proxy_type=proxy_type,
         host=host,
@@ -82,6 +117,7 @@ async def proxy_reachability_test(
         rdns=True,
     )
     stream = None
+    reason: str | None = None
     try:
         try:
             stream = await proxy.connect(
@@ -92,14 +128,17 @@ async def proxy_reachability_test(
             ok = True
         except PySocksProxyError as exc:
             ok = _is_legal_proxy_reply(exc)
+            if not ok:
+                reason = "proxy_reject"
         except (
             ProxyConnectionError,
             ProxyTimeoutError,
             asyncio.TimeoutError,
             TimeoutError,
             OSError,
-        ):
+        ) as exc:
             ok = False
+            reason = classify_test_error(exc)
     except asyncio.CancelledError:
         raise
     finally:
@@ -108,7 +147,19 @@ async def proxy_reachability_test(
                 await stream.close()
             except Exception:
                 pass
-    return ok, (time.perf_counter() - start) * 1000.0
+    return ok, (time.perf_counter() - start) * 1000.0, reason
+
+
+async def proxy_reachability_test_detailed(
+    proxy_url: str,
+    timeout: float = 3.0,
+    session: aiohttp.ClientSession | None = None,
+) -> tuple[bool, float, str | None]:
+    """同 :func:`proxy_reachability_test`，额外返回失败原因键（成功为 None）。
+
+    供上层（如二级池批次汇总日志）区分失败原因（timeout/connect/proxy_reject/...）。
+    """
+    return await _proxy_reachability_impl(proxy_url, timeout)
 
 
 async def site_test(
@@ -121,15 +172,32 @@ async def site_test(
 
     收到任意 <500 的 HTTP 响应即判 ok=True（5xx/连接错误/超时判 ok=False），
     latency_ms 为完成请求耗时。二级池入池测试用（<2000ms 才入池）。
+
+    需要失败原因时请使用 ``site_test_detailed``。
+    """
+    ok, latency, _ = await _site_test_impl(proxy_url, target_url, timeout, session)
+    return ok, latency
+
+
+async def _site_test_impl(
+    proxy_url: str,
+    target_url: str,
+    timeout: float = 3.0,
+    session: aiohttp.ClientSession | None = None,
+) -> tuple[bool, float, str | None]:
+    """``site_test`` 实现：额外返回失败原因键（成功为 None）。
+
+    原因键含 :func:`classify_test_error` 的归类，另加 ``http_5xx``（目标站 5xx）。
     """
     start = time.perf_counter()
     connector: ProxyConnector | None = None
     own_session = False
+    reason: str | None = None
     if session is None:
         try:
             connector = ProxyConnector.from_url(proxy_url)
         except ValueError:
-            return False, 0.0
+            return False, 0.0, "invalid_proxy"
         session = aiohttp.ClientSession(connector=connector)
         own_session = True
     try:
@@ -139,6 +207,8 @@ async def site_test(
             ) as resp:
                 await resp.read()
                 ok = resp.status < 500
+                if not ok:
+                    reason = "http_5xx"
         except (
             aiohttp.ClientError,
             asyncio.TimeoutError,
@@ -147,14 +217,28 @@ async def site_test(
             ValueError,
             ProxyError,
             ReplyError,
-        ):
+        ) as exc:
             ok = False
+            reason = classify_test_error(exc)
     finally:
         if own_session:
             await session.close()
         if connector is not None:
             await connector.close()
-    return ok, (time.perf_counter() - start) * 1000.0
+    return ok, (time.perf_counter() - start) * 1000.0, reason
+
+
+async def site_test_detailed(
+    proxy_url: str,
+    target_url: str,
+    timeout: float = 3.0,
+    session: aiohttp.ClientSession | None = None,
+) -> tuple[bool, float, str | None]:
+    """同 :func:`site_test`，额外返回失败原因键（成功为 None）。
+
+    供上层（如二级池批次汇总日志）区分失败原因（timeout/connect/http_5xx/...）。
+    """
+    return await _site_test_impl(proxy_url, target_url, timeout, session)
 
 
 async def batch_test(

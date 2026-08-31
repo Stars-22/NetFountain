@@ -9,8 +9,11 @@ from ip_pool_common.models import build_proxy_url
 from ip_pool_common.testing import (
     _is_legal_proxy_reply,
     batch_test,
+    classify_test_error,
     proxy_reachability_test,
+    proxy_reachability_test_detailed,
     site_test,
+    site_test_detailed,
 )
 
 HTTP_PROXY = "http://1.2.3.4:8080"
@@ -141,6 +144,76 @@ async def test_site_test_invalid_proxy():
     ok, latency = await site_test("", SITE_URL)
     assert ok is False
     assert latency == 0.0
+
+
+async def test_classify_test_error():
+    assert classify_test_error(asyncio.TimeoutError()) == "timeout"
+    assert classify_test_error(TimeoutError("t")) == "timeout"
+    assert classify_test_error(ConnectionError("refused")) == "connect"
+    assert classify_test_error(OSError("conn")) == "connect"
+    assert classify_test_error(ValueError("bad url")) == "invalid_proxy"
+    assert classify_test_error(RuntimeError("boom")) == "exception"
+
+
+async def test_site_test_detailed_timeout_reason(aio_mock):
+    aio_mock.get(SITE_URL, exception=asyncio.TimeoutError())
+    ok, _, reason = await site_test_detailed(HTTP_PROXY, SITE_URL, timeout=0.5)
+    assert ok is False
+    assert reason == "timeout"
+
+
+async def test_site_test_detailed_5xx_reason(aio_mock):
+    aio_mock.get(SITE_URL, status=502, body=b"bad gateway")
+    ok, _, reason = await site_test_detailed(HTTP_PROXY, SITE_URL)
+    assert ok is False
+    assert reason == "http_5xx"
+
+
+async def test_site_test_detailed_connect_reason(aio_mock):
+    aio_mock.get(SITE_URL, exception=ConnectionError("refused"))
+    ok, _, reason = await site_test_detailed(HTTP_PROXY, SITE_URL)
+    assert ok is False
+    assert reason == "connect"
+
+
+async def test_site_test_detailed_invalid_proxy_reason():
+    ok, _, reason = await site_test_detailed("", SITE_URL)
+    assert ok is False
+    assert reason == "invalid_proxy"
+
+
+async def test_proxy_reachability_detailed_ok_reason(http_proxy_server):
+    url = await http_proxy_server("ok")
+    ok, _, reason = await proxy_reachability_test_detailed(url)
+    assert ok is True
+    assert reason is None
+
+
+async def test_proxy_reachability_detailed_refused_reason(http_proxy_server):
+    url = await http_proxy_server("refused")
+    ok, _, reason = await proxy_reachability_test_detailed(url)
+    assert ok is False
+    assert reason == "connect"
+
+
+async def test_proxy_reachability_detailed_timeout_reason(http_proxy_server):
+    url = await http_proxy_server("timeout")
+    ok, _, reason = await proxy_reachability_test_detailed(url, timeout=0.5)
+    assert ok is False
+    assert reason == "timeout"
+
+
+async def test_proxy_reachability_detailed_reject_reason(socks_server):
+    url = await socks_server(version="socks5", mode="refuse")
+    ok, _, reason = await proxy_reachability_test_detailed(url)
+    assert ok is False
+    assert reason == "proxy_reject"
+
+
+async def test_proxy_reachability_detailed_invalid_url_reason():
+    ok, _, reason = await proxy_reachability_test_detailed("")
+    assert ok is False
+    assert reason == "invalid_proxy"
 
 
 async def test_batch_test_filters_and_preserves_order():

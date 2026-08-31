@@ -109,6 +109,12 @@ async def site_test(proxy_url: str, target_url: str, timeout: float = 3.0) -> tu
     """经代理真实访问目标站点，验证出口可达。返回 (ok, latency_ms)。
     仅二级池初始入池测试使用。"""
 
+# 需要失败原因（供批次汇总日志，如 timeout*10）时，使用 *_detailed 变体：
+# proxy_reachability_test_detailed / site_test_detailed 返回 (ok, latency_ms, reason)。
+# reason 为失败原因键（成功为 None）：timeout / connect / proxy_reject /
+# http_5xx / invalid_proxy / client_error / exception。
+# classify_test_error(exc) 可将任意测试异常归类为上述原因键。
+
 async def batch_test(items, test_fn, concurrency: int = 20) -> list:
     """信号量并发批量测试，仅返回测试通过的项。"""
 ```

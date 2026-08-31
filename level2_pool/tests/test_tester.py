@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import logging
 from unittest import mock
 
 from ip_pool_common.models import IpRecord
@@ -46,8 +47,8 @@ async def test_site_filter_uses_real_site_test(make_ip, tester_factory):
     """未注入 site_fn 时调用真实 site_test（经代理访问目标站点）。"""
     tester = tester_factory(site_fn=None, target_url="http://www.baidu.com")
     with mock.patch(
-        "app.tester.site_test",
-        new=mock.AsyncMock(return_value=(True, 50.0)),
+        "app.tester.site_test_detailed",
+        new=mock.AsyncMock(return_value=(True, 50.0, None)),
     ) as mocked:
         result = await tester.site_filter([_ip(make_ip, 1)])
     mocked.assert_called_once_with(
@@ -110,8 +111,8 @@ async def test_revalidate_uses_proxy_reachability(make_ip, make_l2, tester_facto
     tester = tester_factory(revalidate_fn=None)
     l2 = [make_l2(_ip(make_ip, 1)), make_l2(_ip(make_ip, 2))]
     with mock.patch(
-        "app.tester.proxy_reachability_test",
-        new=mock.AsyncMock(return_value=(True, 50.0)),
+        "app.tester.proxy_reachability_test_detailed",
+        new=mock.AsyncMock(return_value=(True, 50.0, None)),
     ) as mocked:
         alive = await tester.revalidate(l2)
     assert mocked.call_count == 2
@@ -131,3 +132,85 @@ async def test_revalidate_exception_treated_as_dead(make_ip, make_l2, tester_fac
 async def test_revalidate_empty(make_ip, tester_factory):
     tester = tester_factory()
     assert await tester.revalidate([]) == []
+
+
+# ---------------------------------------------------------------------------
+# 批次汇总日志：total / ok / fail 与失败原因计数
+# ---------------------------------------------------------------------------
+
+
+async def test_site_filter_logs_summary_with_reasons(make_ip, tester_factory, caplog):
+    """混合通过/超时/慢/被拒时，日志含 total/ok/fail 及各原因计数。"""
+
+    async def _site(rec):
+        if rec.ip == "10.0.0.2":
+            raise TimeoutError("timeout")
+        if rec.ip == "10.0.0.4":
+            return False, 0.0
+        lat = {"10.0.0.1": 100.0, "10.0.0.3": 3000.0}[rec.ip]
+        return True, lat
+
+    tester = tester_factory(site_fn=_site)
+    recs = [_ip(make_ip, 1), _ip(make_ip, 2), _ip(make_ip, 3), _ip(make_ip, 4)]
+    with caplog.at_level(logging.INFO, logger="app.tester"):
+        result = await tester.site_filter(recs)
+    assert [r.ip for r in result] == ["10.0.0.1"]
+    text = caplog.text
+    assert "site test batch: total=4 ok=1 fail=3" in text
+    assert "timeout*1" in text
+    assert "slow*1" in text
+    assert "rejected*1" in text
+
+
+async def test_site_filter_logs_timeout_count(make_ip, tester_factory, caplog):
+    """10 个超时聚合为 ``timeout*10``。"""
+
+    async def _site(rec):
+        raise TimeoutError("timeout")
+
+    tester = tester_factory(site_fn=_site)
+    with caplog.at_level(logging.INFO, logger="app.tester"):
+        assert await tester.site_filter([_ip(make_ip, i) for i in range(1, 11)]) == []
+    assert "site test batch: total=10 ok=0 fail=10" in caplog.text
+    assert "timeout*10" in caplog.text
+
+
+async def test_site_filter_logs_all_ok(make_ip, tester_factory, caplog):
+    """全通过时 fail=0，不输出原因计数。"""
+    tester = tester_factory(site_fn=lambda rec: (True, 50.0))
+    with caplog.at_level(logging.INFO, logger="app.tester"):
+        await tester.site_filter([_ip(make_ip, 1), _ip(make_ip, 2)])
+    assert "site test batch: total=2 ok=2 fail=0" in caplog.text
+
+
+async def test_site_filter_empty_no_log(make_ip, tester_factory, caplog):
+    tester = tester_factory()
+    with caplog.at_level(logging.INFO, logger="app.tester"):
+        assert await tester.site_filter([]) == []
+    assert "site test batch" not in caplog.text
+
+
+async def test_revalidate_logs_summary_with_reasons(make_ip, make_l2, tester_factory, caplog):
+    """复验混合存活/超时/被拒时，日志含 total/ok/fail 及各原因计数。"""
+
+    async def _reval(rec):
+        if rec.ip == "10.0.0.2":
+            raise TimeoutError("timeout")
+        return rec.ip == "10.0.0.1", 10.0
+
+    tester = tester_factory(revalidate_fn=_reval)
+    l2 = [make_l2(_ip(make_ip, 1)), make_l2(_ip(make_ip, 2)), make_l2(_ip(make_ip, 3))]
+    with caplog.at_level(logging.INFO, logger="app.tester"):
+        alive = await tester.revalidate(l2)
+    assert [r.ip for r in alive] == ["10.0.0.1"]
+    text = caplog.text
+    assert "revalidate batch: total=3 ok=1 fail=2" in text
+    assert "timeout*1" in text
+    assert "rejected*1" in text
+
+
+async def test_revalidate_empty_no_log(make_ip, tester_factory, caplog):
+    tester = tester_factory()
+    with caplog.at_level(logging.INFO, logger="app.tester"):
+        assert await tester.revalidate([]) == []
+    assert "revalidate batch" not in caplog.text
