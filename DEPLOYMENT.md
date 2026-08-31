@@ -313,7 +313,7 @@ WantedBy=multi-user.target
 |---|---|---|
 | 一级池 `pool_size` 一直为 0 | 供应商 API 不可达 / 凭据错误 / 拉取数量为 0 | 检查网络与 `provider.api_url`、`api_key`、`trade_no`；看日志 `pull from ... failed` |
 | 二级池 `pool_stats.total` 为 0 | 一级池地址错误 / 一级池空 / 站点连通测试全部超时 | 检查 `level1.base_url`；确认一级池有 IP；确认 `site.target_url` 可经代理访问 |
-| 二级池 `last_synced_id` 不增长 | 增量同步异常（越界时二级池会自动触发全量重拉） | 检查一级池 `/api/v1/ips/after/{id}` 是否正常；看同步日志 |
+| 二级池 `last_synced_id` 不增长 | 增量同步异常 / 一级池暂无新 IP（水位线等于 `max_id` 时不触发全量重拉） | 检查一级池 `/api/v1/ips/after/{id}` 是否正常；看同步日志 |
 | 代理层返回 `40400`（site not configured） | 请求站点未在路由表配置 / 路由表未重载 | 检查 `proxy_routes.yaml` `sites` 条目与站点名；等待一个 `reload_interval` |
 | 代理层返回 `50200`（upstream error） | 对应二级池未启动或不可达 | 启动/检查二级池；确认 `sites[].base_url` 正确 |
 | 二级池启动后连到错误站点 | 使用了测试残留的 `level2_pool.yaml` | 用 `level2_pool.example.yaml` 模板重写配置 |

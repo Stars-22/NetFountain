@@ -17,8 +17,11 @@ BASE = "http://level1.test"
 _OK = {"code": 0, "msg": "ok"}
 
 
-def _payload(*records: dict) -> dict:
-    return {**_OK, "data": list(records)}
+def _payload(*records: dict, max_id: int | None = None) -> dict:
+    data = {**_OK, "data": list(records)}
+    if max_id is not None:
+        data["max_id"] = max_id
+    return data
 
 
 def _ip_dict(idx: int, id_: int | None = None, protocol: str = "http") -> dict:
@@ -80,17 +83,29 @@ async def test_client_fetch_all_empty(mock_session):
 
 async def test_client_fetch_after(mock_session):
     session, m = mock_session
-    m.get(f"{BASE}/api/v1/ips/after/5", payload=_payload(_ip_dict(6, id_=6)))
+    m.get(f"{BASE}/api/v1/ips/after/5", payload=_payload(_ip_dict(6, id_=6), max_id=6))
     client = Level1SyncClient(BASE, session)
-    records = await client.fetch_after(5)
+    records, max_id = await client.fetch_after(5)
     assert [r.id for r in records] == [6]
+    assert max_id == 6
 
 
 async def test_client_fetch_after_empty(mock_session):
     session, m = mock_session
+    m.get(f"{BASE}/api/v1/ips/after/5", payload=_payload(max_id=5))
+    client = Level1SyncClient(BASE, session)
+    records, max_id = await client.fetch_after(5)
+    assert records == []
+    assert max_id == 5
+
+
+async def test_client_fetch_after_missing_max_id_returns_none(mock_session):
+    session, m = mock_session
     m.get(f"{BASE}/api/v1/ips/after/5", payload=_payload())
     client = Level1SyncClient(BASE, session)
-    assert await client.fetch_after(5) == []
+    records, max_id = await client.fetch_after(5)
+    assert records == []
+    assert max_id is None
 
 
 async def test_client_fetch_after_proxy_url_rebuilt(mock_session):
@@ -164,17 +179,32 @@ async def test_incremental_advances_watermark(mock_session, drain_sync):
     assert len(pool.all()) == 4
 
 
-async def test_empty_response_triggers_full_repull(mock_session, drain_sync):
+async def test_empty_response_no_new_ips_skips_full_repull(mock_session, drain_sync):
+    """一级池暂无新 IP：after(3) 空且 max_id == 水位线 → 不做全量重拉。"""
     session, m = mock_session
     m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1), _ip_dict(2), _ip_dict(3)))
-    # 一级池重启：after 返回空，全量返回新的低 id 记录（含新身份）
-    m.get(f"{BASE}/api/v1/ips/after/3", payload=_payload())
+    m.get(f"{BASE}/api/v1/ips/after/3", payload=_payload(max_id=3))
+    _, pool, stats, _, task = await _make_task(mock_session)
+    await drain_sync(task, once=True)
+    assert task.last_synced_id == 3
+    await drain_sync(task, once=True)
+    assert task.last_synced_id == 3
+    assert stats.total_pulled == 3  # 未触发全量重拉
+    assert len(pool.all()) == 3
+
+
+async def test_empty_response_watermark_above_max_triggers_full_repull(mock_session, drain_sync):
+    """一级池重启（id 空间归零）：after(3) 空且 max_id=2 < 水位线 → 全量重拉。"""
+    session, m = mock_session
+    m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1), _ip_dict(2), _ip_dict(3)))
+    # 一级池重启：after 返回空，max_id 落在水位线之下；全量返回新的低 id 记录
+    m.get(f"{BASE}/api/v1/ips/after/3", payload=_payload(max_id=2))
     m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1, id_=1), _ip_dict(2, id_=2), _ip_dict(4, id_=3)))
     _, pool, _, _, task = await _make_task(mock_session)
     await drain_sync(task, once=True)
     assert task.last_synced_id == 3
     await drain_sync(task, once=True)
-    # 空响应 → 全量重拉 → 新记录（1.2.3.4）入池，水位线重置为 3
+    # max_id(2) < 水位线(3) → 全量重拉 → 新记录（1.2.3.4）入池，水位线重置为 3
     assert task.last_synced_id == 3
     assert [r.ip for r in pool.all()] == ["1.2.3.1", "1.2.3.2", "1.2.3.3", "1.2.3.4"]
 
@@ -183,7 +213,7 @@ async def test_empty_response_resets_watermark(mock_session, drain_sync):
     session, m = mock_session
     m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1), _ip_dict(2), _ip_dict(3)))
     # after(3) 空 → 全量只剩 id 1、2（模拟 id 空间归零）
-    m.get(f"{BASE}/api/v1/ips/after/3", payload=_payload())
+    m.get(f"{BASE}/api/v1/ips/after/3", payload=_payload(max_id=2))
     m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(3, id_=1), _ip_dict(4, id_=2)))
     _, pool, _, _, task = await _make_task(mock_session)
     await drain_sync(task, once=True)
@@ -193,24 +223,39 @@ async def test_empty_response_resets_watermark(mock_session, drain_sync):
     assert len(pool.all()) == 4  # 旧 3 条保留 + 新增 1 条（1.2.3.4）
 
 
-async def test_reset_does_not_remove_existing_records(mock_session, drain_sync):
+async def test_empty_response_missing_max_id_falls_back_to_full_repull(mock_session, drain_sync):
+    """旧版一级池响应无 max_id → 回退全量重拉（向后兼容）。"""
     session, m = mock_session
     m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1), _ip_dict(2)))
-    m.get(f"{BASE}/api/v1/ips/after/2", payload=_payload())
+    m.get(f"{BASE}/api/v1/ips/after/2", payload=_payload())  # 无 max_id 字段
     m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(3, id_=1), _ip_dict(4, id_=2)))
+    _, pool, stats, _, task = await _make_task(mock_session)
+    await drain_sync(task, once=True)
+    assert task.last_synced_id == 2
+    await drain_sync(task, once=True)
+    assert task.last_synced_id == 2
+    assert stats.total_pulled == 4
+    assert len(pool.all()) == 4
+
+
+async def test_reset_does_not_remove_existing_records(mock_session, drain_sync):
+    session, m = mock_session
+    m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1), _ip_dict(2), _ip_dict(3)))
+    m.get(f"{BASE}/api/v1/ips/after/3", payload=_payload(max_id=2))
+    m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(10, id_=1), _ip_dict(11, id_=2)))
     _, pool, _, _, task = await _make_task(mock_session)
     await drain_sync(task, once=True)
     old_ids = {r.id for r in pool.all()}
     await drain_sync(task, once=True)
-    assert pool.stats().total == 4
+    assert pool.stats().total == 5
     assert {r.id for r in pool.all()} >= old_ids
 
 
 async def test_reset_keeps_leased_records(mock_session, drain_sync):
     session, m = mock_session
-    m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1), _ip_dict(2)))
-    m.get(f"{BASE}/api/v1/ips/after/2", payload=_payload())
-    m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(3, id_=1), _ip_dict(4, id_=2)))
+    m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(1), _ip_dict(2), _ip_dict(3)))
+    m.get(f"{BASE}/api/v1/ips/after/3", payload=_payload(max_id=2))
+    m.get(f"{BASE}/api/v1/ips", payload=_payload(_ip_dict(10, id_=1), _ip_dict(11, id_=2)))
     _, pool, _, _, task = await _make_task(mock_session)
     await drain_sync(task, once=True)
     leased = await pool.acquire()
@@ -475,7 +520,7 @@ async def test_sync_slow_test_does_not_block_pull_cadence(make_ip):
             return [make_ip(self.calls)]
 
         async def fetch_after(self, id_):
-            return await self.fetch_all()
+            return await self.fetch_all(), self.calls
 
     task = SyncTask(
         _SteadyClient(), _SlowTester(), Level2Pool(), ServiceStats(),

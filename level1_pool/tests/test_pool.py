@@ -104,6 +104,28 @@ async def test_after_boundary(make_ip):
     assert await empty.after(0) == []
 
 
+async def test_max_id_reflects_current_present_records(make_ip):
+    pool = Level1Pool(max_size=100)
+    now = 1000.0
+    assert pool.max_id is None
+    for i in range(3):
+        await pool.add(make_ip(i + 1), now)
+    assert pool.max_id == 2
+
+
+async def test_max_id_updates_after_eviction_and_ttl_sweep(make_ip):
+    pool = Level1Pool(max_size=3)
+    now = 1000.0
+    for i in range(6):
+        await pool.add(make_ip(i + 1), now)
+    assert [r.id for r in await pool.all()] == [3, 4, 5]
+    assert pool.max_id == 5
+    await pool.add(make_ip(7, ttl=10), now)
+    assert pool.max_id == 6
+    assert await pool.sweep_ttl(now + 11) == 1
+    assert pool.max_id == 5
+
+
 async def test_all_preserves_insertion_order(make_ip):
     pool = Level1Pool(max_size=100)
     now = 1000.0

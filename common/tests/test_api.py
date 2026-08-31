@@ -26,6 +26,10 @@ def test_ok_default_data_none():
     assert ok() == {"code": 0, "msg": "ok", "data": None}
 
 
+def test_ok_with_extra_top_level_field():
+    assert ok([], max_id=5) == {"code": 0, "msg": "ok", "data": [], "max_id": 5}
+
+
 def test_err_wraps_message():
     assert err(40000, "bad param") == {"code": 40000, "msg": "bad param", "data": None}
 

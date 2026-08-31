@@ -85,5 +85,6 @@ async def ips(request: Request):
 
 @router.get("/ips/after/{id_}")
 async def ips_after(id_: int, request: Request):
-    records = await request.app.state.pool.after(id_)
-    return ok(_records_to_list(records))
+    pool = request.app.state.pool
+    records = await pool.after(id_)
+    return ok(_records_to_list(records), max_id=pool.max_id)

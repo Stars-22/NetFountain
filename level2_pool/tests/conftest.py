@@ -290,10 +290,13 @@ def _make_mock_level1_app():
 
     @app.get("/api/v1/ips/after/{id_}")
     async def ips_after(id_: int):
+        records = [r for r in mock_level1_state.records if r["id"] > id_]
+        max_id = mock_level1_state.records[-1]["id"] if mock_level1_state.records else None
         return {
             "code": 0,
             "msg": "ok",
-            "data": [r for r in mock_level1_state.records if r["id"] > id_],
+            "data": records,
+            "max_id": max_id,
         }
 
     return app

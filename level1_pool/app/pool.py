@@ -66,6 +66,15 @@ class Level1Pool:
         return self._next_id
 
     @property
+    def max_id(self) -> int | None:
+        """当前池内最大 id（按 id 升序的队尾元素）；池空返回 None。
+
+        ``_order`` 恒按 id 升序：id 单调自增且新记录追加尾部、容量淘汰弹出头部，
+        故末位即当前最大 id，O(1)。
+        """
+        return self._order[-1] if self._order else None
+
+    @property
     def duplicates(self) -> int:
         """因 proxy_url 重复被刷新重建（删除重建）的累计次数。"""
         return self._duplicates

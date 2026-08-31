@@ -155,6 +155,26 @@ async def test_integration_restart_recovers(mock_level1_server, level1_state, dr
         await session.close()
 
 
+async def test_integration_no_new_ips_skips_full_repull(mock_level1_server, level1_state, drain_sync):
+    """一级池暂无新 IP（after 空且 max_id == 水位线）→ 不触发全量重拉。"""
+    level1_state.add(3)  # ids 1,2,3
+    session = aiohttp.ClientSession()
+    try:
+        client = Level1SyncClient(mock_level1_server, session, timeout=2.0)
+        pool = Level2Pool()
+        stats = ServiceStats()
+        task = SyncTask(client, _always_pass_tester(), pool, stats, interval=0.01)
+        await drain_sync(task, once=True)
+        assert task.last_synced_id == 3
+        assert stats.total_pulled == 3
+        await drain_sync(task, once=True)
+        assert task.last_synced_id == 3
+        assert stats.total_pulled == 3  # 未发生全量重拉
+        assert len(pool.all()) == 3
+    finally:
+        await session.close()
+
+
 async def test_integration_acquire_release_flow(mock_level1_server, running_app, level1_state):
     level1_state.add(2)
     app = create_app(

@@ -1,10 +1,12 @@
 """增量同步（含空响应重置）与拉取-测试解耦的多 worker 测试管线。
 
 - ``Level1SyncClient``：消费一级池 HTTP 契约
-  ``GET /api/v1/ips``（全量）、``GET /api/v1/ips/after/{id}``（按 id 增量）；
-- ``SyncTask``：每 ``interval`` 秒同步一次；增量返回空时判定一级池重启/换代，
-  全量重拉并重置水位线，**绝对不移除池内现存记录**（空闲与租赁均保留），
-  旧记录靠复验与 TTL 自然淘汰；
+  ``GET /api/v1/ips``（全量）、``GET /api/v1/ips/after/{id}``（按 id 增量，
+  响应含顶层 ``max_id`` 供全量重拉判定）；
+- ``SyncTask``：每 ``interval`` 秒同步一次；增量返回空时按 ``max_id`` 判定：
+  仅当水位线已越过一级池最大 id（``last_synced_id > max_id``，即一级池重启/
+  换代）才全量重拉并重置水位线；水位线等于最大 id 视为一级池暂无新 IP 而跳过。
+  **绝对不移除池内现存记录**（空闲与租赁均保留），旧记录靠复验与 TTL 自然淘汰；
 - 拉取与测试解耦：拉取阶段只拉取并推进水位线（按 tick 起点计时，不受测试耗时
   拖慢），拉到的批次进入有界队列，由多个测试 worker（默认
   ``max(1, test_concurrency // 10)``）并发消费：每批内部 ``site_filter``
@@ -42,7 +44,7 @@ class Level1SyncClient:
         self._session = session
         self._timeout = timeout
 
-    async def _get_items(self, url: str) -> list[dict]:
+    async def _get_payload(self, url: str) -> dict:
         async with self._session.get(
             url, timeout=aiohttp.ClientTimeout(total=self._timeout)
         ) as resp:
@@ -56,6 +58,10 @@ class Level1SyncClient:
             payload = await resp.json()
         if not isinstance(payload, dict):
             raise ValueError(f"level1 response is not an object: {url}")
+        return payload
+
+    async def _get_items(self, url: str) -> list[dict]:
+        payload = await self._get_payload(url)
         data = payload.get("data")
         if data is None:
             return []
@@ -85,17 +91,30 @@ class Level1SyncClient:
         items = await self._get_items(f"{self._base_url}/api/v1/ips")
         return [self._to_ip_record(item) for item in items]
 
-    async def fetch_after(self, id_: int) -> list[IpRecord]:
-        """GET /api/v1/ips/after/{id}：增量拉取；data 为空返回 []。"""
-        items = await self._get_items(f"{self._base_url}/api/v1/ips/after/{id_}")
-        return [self._to_ip_record(item) for item in items]
+    async def fetch_after(self, id_: int) -> tuple[list[IpRecord], int | None]:
+        """GET /api/v1/ips/after/{id}：增量拉取，返回 ``(records, max_id)``。
+
+        ``max_id`` 为一级池响应顶层字段（当前池内最大 id）；data 为空或无
+        ``max_id`` 字段时返回 ``([], None)``。
+        """
+        payload = await self._get_payload(f"{self._base_url}/api/v1/ips/after/{id_}")
+        data = payload.get("data")
+        if data is None:
+            data = []
+        if not isinstance(data, list):
+            raise ValueError(f"level1 data is not a list: /api/v1/ips/after/{id_}")
+        max_id = payload.get("max_id")
+        if not isinstance(max_id, int):
+            max_id = None
+        return [self._to_ip_record(item) for item in data], max_id
 
 
 class SyncTask:
     """增量同步任务：拉取阶段 + 多 worker 并发测试管线。
 
-    维护 ``last_synced_id`` 水位线，空响应触发全量重拉。拉取阶段只拉取并
-    入队（推进水位线），站点测试由多个 worker 并行消费队列完成。
+    维护 ``last_synced_id`` 水位线，增量空响应时按一级池 ``max_id`` 判定是否
+    全量重拉。拉取阶段只拉取并入队（推进水位线），站点测试由多个 worker 并行
+    消费队列完成。
     """
 
     _EXPECTED_BATCH = 10  #: 自动 worker 数公式的期望批大小（对应一级池默认 pull_count）
@@ -140,12 +159,20 @@ class SyncTask:
         return self._drops
 
     async def _sync_once(self) -> None:
-        """拉取阶段：拉取 → 推进水位线 → 入队待测批次；不做测试。"""
+        """拉取阶段：拉取 → 推进水位线 → 入队待测批次；不做测试。
+
+        增量返回空时，依据一级池 ``max_id``（响应顶层字段）区分两种情形：
+        - ``last_synced_id > max_id``：一级池 id 空间已重置（重启/换代），
+          全量重拉并重置水位线（**绝对不移除池内现存记录**，空闲与租赁均保留，
+          旧记录靠复验与 TTL 自然淘汰）；
+        - ``last_synced_id == max_id``：一级池暂无新 IP，跳过本次（不做全量提取）；
+        - ``max_id`` 缺失（旧版/空池）：回退全量重拉，保持向后兼容。
+        """
         if self.last_synced_id is None:
             batch = await self._client.fetch_all()
         else:
-            batch = await self._client.fetch_after(self.last_synced_id)
-            if not batch:
+            batch, max_id = await self._client.fetch_after(self.last_synced_id)
+            if not batch and (max_id is None or self.last_synced_id > max_id):
                 batch = await self._client.fetch_all()
         if batch:
             self.last_synced_id = max(r.id for r in batch)

@@ -21,9 +21,12 @@ class ErrorCode(IntEnum):
     UPSTREAM_ERROR = 50200     # 代理层转发上游故障
 
 
-def ok(data: Any = None) -> dict[str, Any]:
-    """统一成功响应：``{"code": 0, "msg": "ok", "data": data}``。"""
-    return {"code": ErrorCode.OK, "msg": "ok", "data": data}
+def ok(data: Any = None, **extra: Any) -> dict[str, Any]:
+    """统一成功响应：``{"code": 0, "msg": "ok", "data": data, **extra}``。
+
+    ``extra`` 用于附加顶层业务字段（如增量接口的 ``max_id``），不破坏原契约。
+    """
+    return {"code": ErrorCode.OK, "msg": "ok", "data": data, **extra}
 
 
 def err(code: int | ErrorCode, msg: str) -> dict[str, Any]:

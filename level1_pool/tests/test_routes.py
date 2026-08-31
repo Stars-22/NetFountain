@@ -141,8 +141,9 @@ async def test_ips_after_middle_id(running_app):
     async with running_app(app) as client:
         resp = await client.get("/api/v1/ips/after/2")
     assert resp.status_code == 200
-    data = resp.json()["data"]
-    assert [d["id"] for d in data] == [3, 4]
+    body = resp.json()
+    assert [d["id"] for d in body["data"]] == [3, 4]
+    assert body["max_id"] == 4
 
 
 async def test_ips_after_out_of_range_empty(running_app):
@@ -152,7 +153,19 @@ async def test_ips_after_out_of_range_empty(running_app):
     async with running_app(app) as client:
         resp = await client.get("/api/v1/ips/after/999")
     assert resp.status_code == 200
-    assert resp.json()["data"] == []
+    body = resp.json()
+    assert body["data"] == []
+    assert body["max_id"] == 2
+
+
+async def test_ips_after_empty_pool_max_id_null(running_app):
+    app = _make_app()
+    async with running_app(app) as client:
+        resp = await client.get("/api/v1/ips/after/0")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["max_id"] is None
 
 
 async def test_empty_pool_not_500(running_app):

@@ -159,12 +159,17 @@
 
 ### 2.4 GET /api/v1/ips/after/{id}
 
-增量同步接口：返回 `id` 之后（`id > {id}`）的记录。越界或无新数据返回 `[]`（不报错）；二级池据此判断一级池重启并触发全量重拉。
+增量同步接口：返回 `id` 之后（`id > {id}`）的记录。响应顶层带 `max_id`（当前池内最大 id，池空为 `null`）。
 
 **请求**：
 - 路径参数 `id`（int，必填）：增量水位 ID。
 
-**响应 `data`**：与 `/api/v1/ips` 相同的记录数组。
+**响应 `data`**：与 `/api/v1/ips` 相同的记录数组；另含顶层字段 `max_id`。
+
+**增量为空时的二级池判定**：
+- `id == max_id`：一级池暂无新 IP，**不做全量提取**（主池尚未有新进 IP 时不触发全量重拉）；
+- `id > max_id`：一级池 id 空间已重置（重启/换代），触发全量重拉并重置水位线；
+- `max_id` 缺失（旧版一级池）：回退全量重拉。
 
 **示例**：
 
@@ -175,6 +180,7 @@ GET /api/v1/ips/after/100
 ```json
 {
   "code": 0, "msg": "ok",
+  "max_id": 102,
   "data": [
     { "id": 101, "ip": "5.6.7.8", "port": 3128, "protocol": "https",
       "proxy_url": "https://5.6.7.8:3128", "region": "US", "ttl": 7200.0,
@@ -499,7 +505,7 @@ GET /api/v1/ips/after/100
 | GET | `/api/v1/status` | — | — | 服务+池统计 |
 | GET | `/api/v1/count` | — | — | 池统计 |
 | GET | `/api/v1/ips` | — | — | 记录数组 |
-| GET | `/api/v1/ips/after/{id}` | `id`(int) | — | 记录数组 |
+| GET | `/api/v1/ips/after/{id}` | `id`(int) | — | 记录数组（顶层含 `max_id`） |
 
 ### 二级池（level2_pool, :8001+）
 
