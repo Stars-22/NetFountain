@@ -1,0 +1,6 @@
+node_modules/
+dist/
+netfountain.db
+netfountain.db-wal
+netfountain.db-shm
+*.log

@@ -1,0 +1,28 @@
+{
+  "name": "netfountain-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "NetFountain IP 代理池前端面板 + 数据聚合后端 BFF",
+  "scripts": {
+    "dev": "concurrently -k -n BFF,VITE -c blue,green \"node server/server.js\" \"vite\"",
+    "build": "vue-tsc --noEmit && vite build",
+    "start": "node server/server.js"
+  },
+  "dependencies": {
+    "echarts": "^5.6.0",
+    "element-plus": "^2.9.1",
+    "express": "^5.1.0",
+    "pinia": "^2.3.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}
