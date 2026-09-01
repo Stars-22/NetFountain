@@ -84,7 +84,7 @@ pip install -r level2_pool/requirements.txt
 pip install -r proxy/requirements.txt
 ```
 
-> 说明：依赖均为无版本号约束安装（FastAPI、uvicorn、aiohttp、aiohttp-socks、pydantic、pydantic-settings、PyYAML）。如需要测试，另装各项目的 `requirements-dev.txt`（pytest、pytest-asyncio、pytest-cov、aioresponses、httpx 等）。
+> 说明：依赖均为无版本号约束安装（FastAPI、uvicorn、aiohttp、aiohttp-socks、python-socks、pydantic、pydantic-settings、PyYAML）。如需要测试，另装各项目的 `requirements-dev.txt`（pytest、pytest-asyncio、pytest-cov、aioresponses、httpx 等）。
 
 验证公共库安装成功：
 
@@ -122,6 +122,8 @@ pool:
 
 test_timeout: 3.0          # 代理可达性测试超时（秒）
 test_concurrency: 10       # 测试并发数
+test_buffer: 20            # 待测批次有界队列容量（队满丢最旧批次，drops 累计）
+test_workers: 5            # 测试 worker 数（缺省自动 max(1, test_concurrency//pull_count)）
 ttl_sweep_interval: 5.0    # TTL 过期清理周期（秒）
 ```
 
@@ -160,6 +162,8 @@ test:
   latency_threshold_ms: 2000   # 站点连通延迟阈值，>2000ms 不入池
   connect_timeout: 3.0         # 连通测试超时（秒）
   concurrency: 20              # 测试并发数
+  workers: 2                   # 测试 worker 数（缺省自动 max(1, concurrency//10)）
+  buffer: 20                   # 待测批次有界队列容量（队满丢最旧批次，drops 累计）
 
 revalidate_interval: 60.0      # 周期复验间隔（秒）
 ttl_sweep_interval: 5.0        # TTL 过期清理周期（秒）

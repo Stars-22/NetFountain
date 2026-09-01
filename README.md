@@ -9,8 +9,8 @@
          │
          ▼
  ┌──────────────────────────────┐
- │      一级池 level1_pool       │  拉取 → 代理可达性测试 → 环形池(500+TTL)
- │       (0.0.0.0:8000)         │  HTTP API /api/v1
+ │      一级池 level1_pool       │  拉取(91HTTP/供应商) → 代理可达性测试 → 环形池(500+TTL)
+ │       (0.0.0.0:8000)         │  拉取与测试解耦 · proxy_url 去重 · HTTP API /api/v1
  └──────────────┬───────────────┘
                 │ HTTP 增量同步 (/api/v1/ips, /ips/after/{id})
       ┌─────────┴─────────┐
@@ -37,7 +37,7 @@
 | 目录 | 职责 | 端口 |
 |---|---|---|
 | `common` | 公共库 `ip_pool_common`：数据模型、代理测试原语、配置加载、日志、API 通用件。被三项目依赖，不依赖任何业务项目。 | — |
-| `level1_pool` | 一级池：从供应商拉取 IP、做代理可达性测试、入环形池、TTL/容量淘汰、对外查询 API。 | 8000 |
+| `level1_pool` | 一级池：从供应商（91HTTP / default_http）拉取 IP、代理可达性测试（拉取与测试解耦多 worker）、按 `proxy_url` 去重入环形池、TTL/容量淘汰、对外查询 API。 | 8000 |
 | `level2_pool` | 二级池：从一级池增量同步、站点连通测试（延迟 < 2000ms 才入池）、租赁分配/释放/删除、周期复验。每站点一份配置、独立进程。 | 8001+ |
 | `proxy` | 代理层：按站点标识路由到对应二级池并纯透传请求/响应，每分钟热更新路由表。 | 9000 |
 
@@ -80,6 +80,7 @@ uvicorn app.main:app --app-dir proxy --host 0.0.0.0 --port 9000
 
 - **统一响应结构**：所有服务返回 `{code, msg, data}`。`code=0` 表示成功；非 0 为错误码（如 40402 空池、40400 站点未配置）。
 - **一级池 → 二级池**：`GET /api/v1/ips` 返回全部 IP；`GET /api/v1/ips/after/{id}` 返回 `id` 之后（增量）的 IP，响应顶层带 `max_id`（当前池内最大 id）。增量返回为空时，二级池仅当水位线已越过 `max_id`（一级池重启/换代）才触发全量重拉；水位线等于 `max_id` 视为暂无新 IP，不做全量提取。
+- **一级池去重**：一级池按 `proxy_url`（ip+port+protocol）去重，重复入池删除旧记录并以新 id 重建（刷新 ttl/region）；`/status` 暴露 `total_duplicates` 累计次数，新 id 会驱动二级池增量同步感知刷新。
 - **代理层 → 二级池**：`/api/v1/{site}/...` 剥离 `{site}` 段后透传到对应二级池，`{code,msg,data}` 原样透传。
 - **协议枚举**：`http`、`https`、`socks4`、`socks5`。
 - **公共库引用**：`requirements.txt` 中 `-e ../common`（editable install），安装后 `import ip_pool_common`。

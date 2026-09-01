@@ -99,14 +99,23 @@ def build_proxy_url(ip, port, protocol) -> str   # 工具：组装 proxy_url
 > 设计要点：测试只关心「能否与代理建立协议会话」，**不验证出口**；站点测试是唯一的出口验证，仅二级池入池时使用。
 
 ```python
+PROBE_HOST = "placeholder.invalid"   # 可达性探测的占位目标（.invalid 顶级域保证解析失败，
+                                     # 代理会快速回 502/拒绝应答，从而仅凭收到合法代理应答判定可达）
+PROBE_PORT = 443
+PROBE_TARGET = f"http://{PROBE_HOST}:{PROBE_PORT}/"
+
 async def proxy_reachability_test(proxy_url: str, timeout: float = 3.0) -> tuple[bool, float]:
     """只验证能否连接代理（建立代理协议会话），不做任何出口验证。
-    - http/https: TCP + 发送 CONNECT 占位目标:443 握手，收到任意合法 HTTP 代理响应(200/4xx/5xx，含407)即判定可用
-    - socks4/5: 完成 SOCKS 握手(greeting + CONNECT)，收到任意合法协议应答即判定可用
-    返回 (ok, latency_ms)。"""
+    通过 python_socks 直接完成「纯握手」（不发内层请求，零出口流量）：
+    - http/https: 发送 CONNECT 占位目标:443 并读应答；收到 2xx（隧道建立）或
+      4xx/5xx（合法代理应答，含 407 鉴权）即判可用；连接拒绝/超时/无应答判不可达
+    - socks4/5: 完成 greeting + CONNECT 握手；握手成功(REP=0x00)即判可用
+    纯握手使 lazy-CONNECT 类代理（对任何 CONNECT 立即回 200）也能被正确判定为可达。
+    返回 (ok, latency_ms)。session 参数仅保留兼容旧签名，本实现不再使用。"""
 
 async def site_test(proxy_url: str, target_url: str, timeout: float = 3.0) -> tuple[bool, float]:
     """经代理真实访问目标站点，验证出口可达。返回 (ok, latency_ms)。
+    收到任意 <500 的 HTTP 响应即判 ok；5xx/连接错误/超时判失败。
     仅二级池初始入池测试使用。"""
 
 # 需要失败原因（供批次汇总日志，如 timeout*10）时，使用 *_detailed 变体：
@@ -116,10 +125,10 @@ async def site_test(proxy_url: str, target_url: str, timeout: float = 3.0) -> tu
 # classify_test_error(exc) 可将任意测试异常归类为上述原因键。
 
 async def batch_test(items, test_fn, concurrency: int = 20) -> list:
-    """信号量并发批量测试，仅返回测试通过的项。"""
+    """信号量并发批量测试，并发不超过 concurrency，仅返回测试通过的项，保持原顺序。"""
 ```
 
-实现依赖：`aiohttp` + `aiohttp-socks`（http/https 用 `ProxyConnector`，socks4/socks5 用 `ProxyConnector.from_url`）。
+实现依赖：`aiohttp` + `aiohttp-socks` + `python-socks`——`proxy_reachability_test` 的握手**直接经 `python_socks` 完成**（兼容 lazy-CONNECT 代理，不依赖 aiohttp-socks）；`site_test` 使用 `aiohttp-socks` 的 `ProxyConnector`（http/https 用 `ProxyConnector`，socks4/socks5 用 `ProxyConnector.from_url`）。`python-socks` 通过 `aiohttp-socks` 传递依赖引入。
 
 ### 3. config.py —— 配置加载
 
@@ -144,18 +153,24 @@ def setup_logging(service_name: str, level: str = "INFO",
 ```python
 class ErrorCode(IntEnum):     # 统一错误码
     OK = 0
-    NOT_FOUND = 40401
-    EMPTY_POOL = 40402
+    PARAM_ERROR = 40000
+    NOT_FOUND = 40400         # 站点未配置 / 对象不存在
+    EMPTY_POOL = 40402        # 二级池 acquire 空池
     INTERNAL = 50000
-    ...
+    UPSTREAM_ERROR = 50200    # 代理层转发上游故障
 
-def ok(data) -> dict                       # {"code":0,"msg":"ok","data":...}
-def err(code, msg) -> dict                 # {"code":...,"msg":...,"data":None}
+def ok(data, **extra) -> dict             # {"code":0,"msg":"ok","data":data,**extra}
+                                          # extra 附加顶层字段（如增量接口 max_id）
+def err(code, msg) -> dict                # {"code":...,"msg":...,"data":None}
 
-class ApiCounterMiddleware:                # 中间件：统计 API 调用次数
-    def __init__(self): ...
+class ApiCounterMiddleware:               # 中间件：统计 API 调用次数（ASGI，thread/async 安全）
+    def __init__(self, app): ...          # 用法 app.add_middleware(ApiCounterMiddleware)
     @property
     def count(self) -> int: ...
+
+class BizCodeLogMiddleware:               # 中间件：每请求追加含返回业务码的访问日志
+    def __init__(self, app): ...          # 格式 http=<状态码> biz=<业务码> method=<方法> path=<路径>
+                                          # body 非 JSON 时业务码记 "-"；不改响应、不吞异常
 
 async def run_app(app, host, port) -> None  # 统一 uvicorn 启动入口
 ```
