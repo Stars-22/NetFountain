@@ -72,7 +72,7 @@
 | `uptime` | float | 进程启动至今秒数 |
 | `total_pulled` | int | 从供应商拉取总数 |
 | `total_entered` | int | 通过可达性测试入池总数 |
-| `total_duplicates` | int | 因 `proxy_url` 重复被删除重建刷新的累计次数 |
+| `total_duplicates` | int | 因 `proxy_url` 重复被跳过更新（仅 TTL 变小且 region 未变）的累计次数 |
 | `pool_size` | int | 当前池容量 |
 | `counts` | dict | 各协议数量 `{http, https, socks4, socks5}` |
 | `api_call_count` | int | 累计 `/api/v1` 调用次数 |

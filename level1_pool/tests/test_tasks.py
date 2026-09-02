@@ -92,7 +92,6 @@ async def test_pull_exception_does_not_stop_loop(make_ip):
     assert provider.pull_calls >= 2
     assert stats.total_pulled == provider.pull_calls - 1
     assert stats.total_entered == stats.total_pulled
-    assert pool.size() + pool.duplicates == stats.total_entered
     assert 1 <= pool.size() <= stats.total_entered
     assert stats.pull_failures == 1
 
@@ -108,7 +107,23 @@ async def test_stats_total_pulled_and_entered(make_ip):
     assert stats.total_pulled == provider.pull_calls * 2
     assert stats.total_entered == provider.pull_calls * 1
     assert pool.size() == 1
-    assert pool.size() + pool.duplicates == stats.total_entered
+
+
+async def test_pull_skips_when_only_ttl_smaller(make_ip):
+    """重复 IP 仅 TTL 变小 → 跳过：duplicates+1，池内保持旧 ttl，total_entered 仍累计。"""
+    provider = _FiniteProvider([[make_ip(1, ttl=100)], [make_ip(1, ttl=50)]])
+    tester = _FakeTester(passed_count=1)
+    pool = Level1Pool(max_size=100)
+    stats = ServiceStats()
+    task = PullTask(provider, tester, pool, stats, 10, 0.01, asyncio.Lock())
+    await _run_until_cancelled(task)
+    assert stats.total_pulled == 2
+    assert stats.total_entered == 2
+    assert pool.size() == 1
+    assert pool.duplicates == 1
+    assert pool.next_id == 1
+    records = await pool.all()
+    assert records[0].ttl == 100
 
 
 async def test_pull_task_cancellation(make_ip):

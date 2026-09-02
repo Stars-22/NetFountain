@@ -99,7 +99,7 @@ npm run build && npm start   # 生产：构建后同进程托管 dist/ → http:
 
 - **统一响应结构**：所有服务返回 `{code, msg, data}`。`code=0` 表示成功；非 0 为错误码（如 40402 空池、40400 站点未配置）。
 - **一级池 → 二级池**：`GET /api/v1/ips` 返回全部 IP；`GET /api/v1/ips/after/{id}` 返回 `id` 之后（增量）的 IP，响应顶层带 `max_id`（当前池内最大 id）。增量返回为空时，二级池仅当水位线已越过 `max_id`（一级池重启/换代）才触发全量重拉；水位线等于 `max_id` 视为暂无新 IP，不做全量提取。
-- **一级池去重**：一级池按 `proxy_url`（ip+port+protocol）去重，重复入池删除旧记录并以新 id 重建（刷新 ttl/region）；`/status` 暴露 `total_duplicates` 累计次数，新 id 会驱动二级池增量同步感知刷新。
+- **一级池去重**：一级池按 `proxy_url`（ip+port+protocol）去重，重复入池删除旧记录并以新 id 重建（刷新 ttl/region）；仅当 region 未变且新 ttl 严格小于旧 ttl（上次拉取返回值）时直接跳过不更新；`/status` 的 `total_duplicates` 只累计跳过次数，重建产生的新 id 会驱动二级池增量同步感知刷新。
 - **代理层 → 二级池**：`/api/v1/{site}/...` 剥离 `{site}` 段后透传到对应二级池，`{code,msg,data}` 原样透传。
 - **协议枚举**：`http`、`https`、`socks4`、`socks5`。
 - **公共库引用**：`requirements.txt` 中 `-e ../common`（editable install），安装后 `import ip_pool_common`。

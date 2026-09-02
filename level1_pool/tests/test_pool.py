@@ -210,7 +210,7 @@ async def test_add_dedup_same_proxy_url_new_id(make_ip):
     assert second.id == 1
     assert pool.size() == 1
     assert pool.next_id == 2
-    assert pool.duplicates == 1
+    assert pool.duplicates == 0
     assert pool.counts().total == 1
 
 
@@ -230,6 +230,92 @@ async def test_add_dedup_refreshes_fields_at_tail(make_ip):
     records = await pool.all()
     assert [r.id for r in records] == [1, 2]
     assert [r.ip for r in records] == ["10.0.0.2", "10.0.0.1"]
+    assert pool.duplicates == 0
+
+
+async def test_add_skips_when_only_ttl_smaller(make_ip):
+    """重复 IP 仅 TTL 变小（region 未变）→ 跳过：零副作用，duplicates+1。"""
+    pool = Level1Pool(max_size=100)
+    now = 1000.0
+    first = await pool.add(make_ip(1, region="CN", ttl=100), now)
+    second = await pool.add(make_ip(1, region="CN", ttl=60), now + 5)
+    assert second is None
+    assert pool.size() == 1
+    records = await pool.all()
+    assert [r.id for r in records] == [first.id]
+    assert records[0].ttl == 100
+    assert records[0].region == "CN"
+    assert records[0].created_at == now
+    assert records[0].last_verified_at == now
+    assert pool.next_id == 1
+    assert pool.max_id == first.id
+    assert pool.duplicates == 1
+    assert pool.counts().total == 1
+
+
+async def test_add_ttl_smaller_but_region_changed_rebuilds(make_ip):
+    """TTL 变小但 region 变化 → 不属于"仅 TTL 有变化"，照常删除重建。"""
+    pool = Level1Pool(max_size=100)
+    now = 1000.0
+    await pool.add(make_ip(1, region="old", ttl=100), now)
+    rec = await pool.add(make_ip(1, region="new", ttl=60), now + 5)
+    assert rec is not None
+    assert rec.id == 1
+    assert rec.region == "new"
+    assert rec.ttl == 60
+    assert pool.size() == 1
+    assert pool.duplicates == 0
+    assert pool.next_id == 2
+
+
+async def test_add_ttl_equal_or_larger_rebuilds(make_ip):
+    """TTL 持平或变大（非严格变小）→ 照常删除重建。"""
+    pool = Level1Pool(max_size=100)
+    now = 1000.0
+    await pool.add(make_ip(1, ttl=100), now)
+    rec_eq = await pool.add(make_ip(1, ttl=100), now + 5)
+    assert rec_eq is not None
+    assert rec_eq.id == 1
+    assert rec_eq.ttl == 100
+    rec_up = await pool.add(make_ip(1, ttl=200), now + 10)
+    assert rec_up is not None
+    assert rec_up.id == 2
+    assert rec_up.ttl == 200
+    assert pool.size() == 1
+    assert pool.duplicates == 0
+    assert pool.next_id == 3
+
+
+async def test_add_ttl_none_rebuilds(make_ip):
+    """任一方 ttl 为 None 无法比较 → 照常删除重建。"""
+    pool = Level1Pool(max_size=100)
+    now = 1000.0
+    await pool.add(make_ip(1, ttl=100), now)
+    rec = await pool.add(make_ip(1, ttl=None), now + 5)
+    assert rec is not None
+    assert rec.id == 1
+    assert rec.ttl is None
+    rec = await pool.add(make_ip(1, ttl=50), now + 10)
+    assert rec is not None
+    assert rec.id == 2
+    assert rec.ttl == 50
+    assert pool.size() == 1
+    assert pool.duplicates == 0
+    assert pool.next_id == 3
+
+
+async def test_add_skip_does_not_evict_or_advance_watermark(make_ip):
+    """跳过不触发容量淘汰、不推进 id 水位线（max_id 不变）。"""
+    pool = Level1Pool(max_size=2)
+    now = 1000.0
+    first = await pool.add(make_ip(1, ttl=100), now)
+    second = await pool.add(make_ip(2, ttl=100), now)
+    assert await pool.add(make_ip(1, ttl=50), now + 5) is None
+    assert pool.size() == 2
+    assert pool.next_id == 2
+    assert pool.max_id == second.id
+    records = await pool.all()
+    assert [r.id for r in records] == [first.id, second.id]
     assert pool.duplicates == 1
 
 
@@ -273,17 +359,32 @@ async def test_ttl_sweep_cleans_key_index(make_ip):
 
 
 async def test_concurrent_add_same_endpoint_dedup(make_ip):
+    """并发同 proxy_url 入池：相同 ttl（严格相等不跳过）→ 全部删除重建，确定性结果。"""
     pool = Level1Pool(max_size=500)
     now = 1000.0
     total = 50
 
     async def _add(_i: int):
-        await pool.add(make_ip(1, ttl=60 + _i), now)
+        await pool.add(make_ip(1, ttl=60), now)
 
     await asyncio.gather(*(_add(i) for i in range(total)))
     records = await pool.all()
     assert len(records) == 1
     assert pool.size() == 1
     assert pool.counts().total == 1
-    assert pool.duplicates == total - 1
+    assert pool.duplicates == 0
     assert pool.next_id == total
+
+
+async def test_concurrent_add_mixed_ttl_partitions_skip_or_rebuild(make_ip):
+    """并发混合 TTL：每次 add 非跳过即重建 → duplicates + next_id == total。"""
+    pool = Level1Pool(max_size=500)
+    now = 1000.0
+    total = 50
+
+    async def _add(_i: int):
+        await pool.add(make_ip(1, ttl=100 - _i), now)
+
+    await asyncio.gather(*(_add(i) for i in range(total)))
+    assert pool.size() == 1
+    assert pool.duplicates + pool.next_id == total

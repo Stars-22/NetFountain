@@ -3,7 +3,8 @@
 - 容量淘汰由 ``deque(maxlen)`` 天然实现（满则弹出最旧），O(1)；
 - TTL 淘汰为周期性主动清扫，二者独立，容量兜底 + TTL 精细化；
 - 以 ``proxy_url``（ip+port+protocol）为去重键：重复入池时删除旧记录并以新 id
-  重建（刷新 ttl/region，记录移至尾部，新 id 触发二级池增量同步）；
+  重建（刷新 ttl/region，记录移至尾部，新 id 触发二级池增量同步）；仅当
+  region 未变且新 ttl 严格小于旧 ttl（上次拉取返回值）时直接跳过不更新；
 - 所有变更在 ``asyncio.Lock`` 下进行，保证并发安全；
 - ``id`` 全局自增、绝不复用，作为二级池增量同步的水位线依据。
 """
@@ -76,25 +77,38 @@ class Level1Pool:
 
     @property
     def duplicates(self) -> int:
-        """因 proxy_url 重复被刷新重建（删除重建）的累计次数。"""
+        """因 proxy_url 重复被跳过更新（仅 TTL 变小且 region 未变）的累计次数。"""
         return self._duplicates
 
-    async def add(self, ip: ProviderIp, now: float) -> IpRecord:
+    async def add(self, ip: ProviderIp, now: float) -> IpRecord | None:
         """按 ``proxy_url``（ip+port+protocol）去重入池。
 
-        - 重复：删除旧记录并分配新 id 重建（刷新 ttl/region，移至尾部），
-          ``duplicates`` 累计；新 id 会触发二级池增量同步；
+        - 重复且只有 TTL 变小（region 未变、双方 ttl 均非 None、新 ttl 严格
+          小于旧记录存储的 ttl）：直接跳过，不更新任何状态，返回 ``None``，
+          ``duplicates`` 累计；
+        - 其余重复：删除旧记录并分配新 id 重建（刷新 ttl/region，移至尾部），
+          新 id 会触发二级池增量同步；
         - 新记录：分配自增 id 入池；已满时弹出最旧记录（容量淘汰，同步清理去重索引）。
         """
         async with self._lock:
             key = build_proxy_url(ip.ip, ip.port, ip.protocol)
-            old_id = self._key_index.pop(key, None)
+            old_id = self._key_index.get(key)
             if old_id is not None:
-                old = self._records.pop(old_id, None)
+                old = self._records.get(old_id)
+                if (
+                    old is not None
+                    and old.ttl is not None
+                    and ip.ttl is not None
+                    and ip.region == old.region
+                    and ip.ttl < old.ttl
+                ):
+                    self._duplicates += 1
+                    return None
+                self._key_index.pop(key, None)
                 if old is not None:
+                    self._records.pop(old_id)
                     self._order.remove(old_id)
                     self._counts[old.protocol] -= 1
-                self._duplicates += 1
             rec_id = self._next_id
             self._next_id += 1
             record = IpRecord(
