@@ -123,29 +123,73 @@ export function getLatestRate(site) {
   const dt = a.ts - b.ts
   if (dt <= 0) return null
   const dp = (a.total_pulled || 0) - (b.total_pulled || 0)
+  if (dp < 0) return null // 计数器回退（池重启归零），无法估算速率
   return dp / dt
 }
 
-// 按时间范围降采样聚合（禁止返回秒级原始行）
+// 按时间范围降采样聚合（禁止返回秒级原始行）。
+// 累计计数列的桶内增量 = 相邻样本差值求和（LAG 窗口）；
+// 样本值回退（池重启计数器归零）时只计入回退后的值，避免重启瞬间
+// MAX-MIN 差值把拉取速率/错误统计吹成虚假尖峰。
 const historyStmt = db.prepare(`
+  WITH w AS (
+    SELECT
+      site,
+      CAST(ts / ? AS INTEGER) * ? AS bucket,
+      pool_capacity, available_count, avg_latency,
+      total_pulled, total_entered, total_duplicates,
+      pull_failures, test_failures, sync_failures, revalidate_failures,
+      ttl_sweep_failures, empty_acquires, drops,
+      LAG(total_pulled)        OVER (PARTITION BY site ORDER BY ts) AS prev_pulled,
+      LAG(total_entered)       OVER (PARTITION BY site ORDER BY ts) AS prev_entered,
+      LAG(total_duplicates)    OVER (PARTITION BY site ORDER BY ts) AS prev_duplicates,
+      LAG(pull_failures)       OVER (PARTITION BY site ORDER BY ts) AS prev_pull_failures,
+      LAG(test_failures)       OVER (PARTITION BY site ORDER BY ts) AS prev_test_failures,
+      LAG(sync_failures)       OVER (PARTITION BY site ORDER BY ts) AS prev_sync_failures,
+      LAG(revalidate_failures) OVER (PARTITION BY site ORDER BY ts) AS prev_revalidate_failures,
+      LAG(ttl_sweep_failures)  OVER (PARTITION BY site ORDER BY ts) AS prev_ttl_sweep_failures,
+      LAG(empty_acquires)      OVER (PARTITION BY site ORDER BY ts) AS prev_empty_acquires,
+      LAG(drops)               OVER (PARTITION BY site ORDER BY ts) AS prev_drops
+    FROM metrics
+    WHERE ts >= ?
+  )
   SELECT
     site,
-    CAST(ts / ? AS INTEGER) * ? AS bucket,
-    AVG(pool_capacity)                          AS pool_capacity,
-    AVG(available_count)                        AS available_count,
-    AVG(avg_latency)                            AS avg_latency,
-    MAX(total_pulled)     - MIN(total_pulled)   AS pulled_delta,
-    MAX(total_entered)    - MIN(total_entered)  AS entered_delta,
-    MAX(total_duplicates) - MIN(total_duplicates) AS duplicates_delta,
-    MAX(pull_failures)       - MIN(pull_failures)       AS pull_failures,
-    MAX(test_failures)       - MIN(test_failures)       AS test_failures,
-    MAX(sync_failures)       - MIN(sync_failures)       AS sync_failures,
-    MAX(revalidate_failures) - MIN(revalidate_failures) AS revalidate_failures,
-    MAX(ttl_sweep_failures)  - MIN(ttl_sweep_failures)  AS ttl_sweep_failures,
-    MAX(empty_acquires)      - MIN(empty_acquires)      AS empty_acquires,
-    MAX(drops)               - MIN(drops)               AS drops
-  FROM metrics
-  WHERE ts >= ?
+    bucket,
+    AVG(pool_capacity)   AS pool_capacity,
+    AVG(available_count) AS available_count,
+    AVG(avg_latency)     AS avg_latency,
+    SUM(CASE WHEN prev_pulled IS NULL THEN 0
+             WHEN total_pulled < prev_pulled THEN total_pulled
+             ELSE total_pulled - prev_pulled END) AS pulled_delta,
+    SUM(CASE WHEN prev_entered IS NULL THEN 0
+             WHEN total_entered < prev_entered THEN total_entered
+             ELSE total_entered - prev_entered END) AS entered_delta,
+    SUM(CASE WHEN prev_duplicates IS NULL THEN 0
+             WHEN total_duplicates < prev_duplicates THEN total_duplicates
+             ELSE total_duplicates - prev_duplicates END) AS duplicates_delta,
+    SUM(CASE WHEN prev_pull_failures IS NULL THEN 0
+             WHEN pull_failures < prev_pull_failures THEN pull_failures
+             ELSE pull_failures - prev_pull_failures END) AS pull_failures,
+    SUM(CASE WHEN prev_test_failures IS NULL THEN 0
+             WHEN test_failures < prev_test_failures THEN test_failures
+             ELSE test_failures - prev_test_failures END) AS test_failures,
+    SUM(CASE WHEN prev_sync_failures IS NULL THEN 0
+             WHEN sync_failures < prev_sync_failures THEN sync_failures
+             ELSE sync_failures - prev_sync_failures END) AS sync_failures,
+    SUM(CASE WHEN prev_revalidate_failures IS NULL THEN 0
+             WHEN revalidate_failures < prev_revalidate_failures THEN revalidate_failures
+             ELSE revalidate_failures - prev_revalidate_failures END) AS revalidate_failures,
+    SUM(CASE WHEN prev_ttl_sweep_failures IS NULL THEN 0
+             WHEN ttl_sweep_failures < prev_ttl_sweep_failures THEN ttl_sweep_failures
+             ELSE ttl_sweep_failures - prev_ttl_sweep_failures END) AS ttl_sweep_failures,
+    SUM(CASE WHEN prev_empty_acquires IS NULL THEN 0
+             WHEN empty_acquires < prev_empty_acquires THEN empty_acquires
+             ELSE empty_acquires - prev_empty_acquires END) AS empty_acquires,
+    SUM(CASE WHEN prev_drops IS NULL THEN 0
+             WHEN drops < prev_drops THEN drops
+             ELSE drops - prev_drops END) AS drops
+  FROM w
   GROUP BY site, bucket
   ORDER BY bucket ASC
 `)

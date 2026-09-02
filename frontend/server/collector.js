@@ -187,8 +187,10 @@ async function collectOnce() {
     fetchJson(`${proxyBase}/api/v1/health`),
   ])
 
-  if (isOk(l1Status)) state.level1 = l1Status.data
-  if (isOk(l1Ips)) state.level1Ips = l1Ips.data
+  // 服务不可达时置空缓存（而非保留旧值）：metrics 行随之跳过，
+  // 图表断线期间呈现空洞，且不会把断线前旧累计值与重启后新值混入同一聚合桶
+  state.level1 = isOk(l1Status) ? l1Status.data : null
+  state.level1Ips = isOk(l1Ips) ? l1Ips.data : null
 
   const siteList = []
   if (isOk(health)) {
@@ -227,7 +229,8 @@ async function collectOnce() {
   const rows = []
   if (l1Row) rows.push(l1Row)
   rows.push(...siteRows)
-  rows.push(globalMetricsRow(now, siteRows))
+  // global 行的计数列全部派生自一级池，一级池不可达时跳过，避免写入伪归零值
+  if (l1Row) rows.push(globalMetricsRow(now, siteRows))
 
   try {
     saveMetrics(rows)
