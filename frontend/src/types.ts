@@ -5,19 +5,44 @@ export interface ProtoCounts {
   socks5: number
 }
 
-export interface Overview {
-  pool_capacity: number | null
-  available_count: number
-  leased_count: number
-  avg_latency: number | null
-  by_proto: ProtoCounts
-  pull_rate: number | null
+export interface Level1Strip {
+  ip_count: number | null
+  uptime: number | null
+  total_pulled: number
   pass_rate: number | null
   duplicate_rate: number | null
-  errors_total: number
+  by_proto: ProtoCounts
   errors: Record<string, number>
-  proxy_errors: number
+  drops: number
+  errors_total: number
+  api_call_count: number | null
+  avg_remaining: number | null
+}
+
+export interface SiteStrip {
+  name: string
+  reachable: boolean
+  target_url: string | null
+  base_url: string | null
+  ip_count: number
+  free: number
+  leased: number
+  uptime: number | null
+  total_pulled: number
+  pass_rate: number | null
+  avg_latency: number | null
+  by_proto: ProtoCounts
+  errors: Record<string, number>
+  drops: number
+  errors_total: number
+  api_call_count: number | null
+  avg_remaining: number | null
+}
+
+export interface Overview {
   updated_at: number
+  level1: Level1Strip | null
+  sites: SiteStrip[]
 }
 
 export interface SiteSummary {
@@ -40,10 +65,14 @@ export interface Distribution {
   value: number
 }
 
-export interface Distributions {
-  latency: Distribution[]
+export interface PoolDistributions {
   ttl: Distribution[]
+  latency?: Distribution[]
+}
+
+export interface Distributions {
   updated_at: number
+  pools: Record<string, PoolDistributions>
 }
 
 export interface IpItem {
@@ -92,7 +121,10 @@ export interface Stats {
   } | null
   sites: SiteSummary[]
   proxy: {
+    uptime: number | null
+    started_at: string | null
     total_calls: number
+    calls_by_ip: Record<string, number>
     calls_by_site: Record<string, number>
     errors: Record<string, number>
   } | null

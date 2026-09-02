@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
-import { fmtMs, latencyType } from '../format'
+import { fmtMs, fmtRemaining, latencyType } from '../format'
 import { useDataStore } from '../stores/data'
 import type { IpItem } from '../types'
 
@@ -50,7 +50,19 @@ watch(size, () => {
   load()
 })
 
-onMounted(load)
+let timer: number | undefined
+
+onMounted(() => {
+  load()
+  // 5s 自动刷新，保持「剩余时间」等实时字段新鲜
+  timer = window.setInterval(() => {
+    if (!loading.value) load()
+  }, 5000)
+})
+
+onBeforeUnmount(() => {
+  if (timer !== undefined) clearInterval(timer)
+})
 
 const siteOptions = computed(() => data.sites.map((s) => ({ value: s.name, label: s.name })))
 </script>
@@ -99,6 +111,9 @@ const siteOptions = computed(() => data.sites.map((s) => ({ value: s.name, label
             {{ row.leased ? '租赁中' : '空闲' }}
           </el-tag>
         </template>
+      </el-table-column>
+      <el-table-column label="剩余时间" width="110">
+        <template #default="{ row }">{{ fmtRemaining(row) }}</template>
       </el-table-column>
     </el-table>
 

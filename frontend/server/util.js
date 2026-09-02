@@ -37,3 +37,22 @@ export function latencyStats(ips) {
   if (n === 0) return { avg: null, min: null, max: null, count: 0 }
   return { avg: sum / n, min, max, count: n }
 }
+
+// 平均剩余时间：有限 TTL 记录的 max(0, created_at + ttl - now) 平均值；
+// ttl 为 null（永久）的记录不参与平均。无有效记录返回 null。
+export function avgRemainingSeconds(ips, now) {
+  if (!Array.isArray(ips) || ips.length === 0) return null
+  const t = now == null ? Date.now() / 1000 : now
+  let sum = 0
+  let n = 0
+  for (const ip of ips) {
+    const ttl = num(ip.ttl)
+    if (ttl === null) continue
+    const created = num(ip.created_at) || 0
+    const remaining = created + ttl - t
+    sum += remaining > 0 ? remaining : 0
+    n += 1
+  }
+  if (n === 0) return null
+  return sum / n
+}

@@ -1,7 +1,6 @@
 import type {
   Distributions,
   HistoryResponse,
-  IpItem,
   IpPage,
   Overview,
   SiteSummary,
@@ -19,6 +18,7 @@ export class ApiError extends Error {}
 async function request<T>(
   path: string,
   params?: Record<string, string | number>,
+  method: 'GET' | 'POST' = 'GET',
 ): Promise<T> {
   const qs =
     params && Object.keys(params).length
@@ -32,7 +32,7 @@ async function request<T>(
 
   let res: Response
   try {
-    res = await fetch(`/api${path}${qs}`)
+    res = await fetch(`/api${path}${qs}`, { method })
   } catch {
     throw new ApiError('无法连接后端服务')
   }
@@ -54,8 +54,8 @@ export const api = {
   distributions: () => request<Distributions>('/distributions'),
   stats: () => request<Stats>('/stats'),
   sites: () => request<SiteSummary[]>('/sites'),
-  siteIps: (site: string) =>
-    request<IpItem[]>('/sites/' + encodeURIComponent(site) + '/ips'),
+  releaseAll: (site: string) =>
+    request<number>('/sites/' + encodeURIComponent(site) + '/release-all', undefined, 'POST'),
   ips: (p: {
     protocol?: string
     status?: string

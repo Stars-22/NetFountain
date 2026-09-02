@@ -7,9 +7,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from './config.js'
-import { getLatestRate, queryHistory, runRetention, db } from './db.js'
+import { queryHistory, runRetention, db } from './db.js'
 import { getState, startCollector } from './collector.js'
-import { int, num, protoMap, latencyStats } from './util.js'
+import { int, num, protoMap, latencyStats, avgRemainingSeconds } from './util.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const distDir = path.join(__dirname, '..', 'dist')
@@ -68,144 +68,163 @@ function buildSiteSummaries() {
   return out
 }
 
-function buildOverview() {
-  const st = getState()
-  const l1 = st.level1
-  const summaries = buildSiteSummaries()
-
-  let available = 0
-  let leased = 0
-  let latSum = 0
-  let latN = 0
-  const byProto = { http: 0, https: 0, socks4: 0, socks5: 0 }
-  const errTotals = { pull_failures: 0, test_failures: 0, sync_failures: 0, revalidate_failures: 0, ttl_sweep_failures: 0, empty_acquires: 0, drops: 0 }
-
-  for (const s of summaries) {
-    available += s.free_total
-    leased += s.leased_total
-    if (s.avg_latency != null) {
-      const total = s.total
-      latSum += s.avg_latency * (total || 1)
-      latN += total || 1
-    }
-    byProto.http += s.by_proto.http
-    byProto.https += s.by_proto.https
-    byProto.socks4 += s.by_proto.socks4
-    byProto.socks5 += s.by_proto.socks5
-    const e = s.errors || {}
-    errTotals.sync_failures += int(e.sync_failures) || 0
-    errTotals.test_failures += int(e.test_failures) || 0
-    errTotals.revalidate_failures += int(e.revalidate_failures) || 0
-    errTotals.ttl_sweep_failures += int(e.ttl_sweep_failures) || 0
-    errTotals.empty_acquires += int(e.empty_acquires) || 0
-    errTotals.drops += s.drops
+// 池级错误总数：errors 各项求和 + drops
+function poolErrorsTotal(errors, drops) {
+  let total = 0
+  if (errors && typeof errors === 'object') {
+    for (const v of Object.values(errors)) total += int(v) || 0
   }
-
-  let poolCapacity = null
-  let totalPulled = 0
-  let totalEntered = 0
-  let totalDuplicates = 0
-  if (l1) {
-    poolCapacity = int(l1.pool_size)
-    totalPulled = int(l1.total_pulled) || 0
-    totalEntered = int(l1.total_entered) || 0
-    totalDuplicates = int(l1.total_duplicates) || 0
-    const e = l1.errors || {}
-    errTotals.pull_failures += int(e.pull_failures) || 0
-    errTotals.test_failures += int(e.test_failures) || 0
-    errTotals.ttl_sweep_failures += int(e.ttl_sweep_failures) || 0
-    errTotals.drops += int(l1.drops) || 0
-  }
-
-  // 代理层错误
-  const proxyStats = st.proxy ? st.proxy.stats || {} : {}
-  let proxyErrors = 0
-  if (proxyStats.errors && typeof proxyStats.errors === 'object') {
-    for (const v of Object.values(proxyStats.errors)) proxyErrors += int(v) || 0
-  }
-
-  const pullRate = getLatestRate('level1')
-  const errorsTotal =
-    errTotals.pull_failures + errTotals.test_failures + errTotals.sync_failures +
-    errTotals.revalidate_failures + errTotals.ttl_sweep_failures +
-    errTotals.empty_acquires + proxyErrors
-
-  return {
-    pool_capacity: poolCapacity,
-    available_count: available,
-    leased_count: leased,
-    avg_latency: latN > 0 ? latSum / latN : null,
-    by_proto: byProto,
-    pull_rate: pullRate,
-    pass_rate: totalPulled > 0 ? totalEntered / totalPulled : null,
-    duplicate_rate: totalPulled > 0 ? totalDuplicates / totalPulled : null,
-    errors_total: errorsTotal,
-    errors: errTotals,
-    proxy_errors: proxyErrors,
-    updated_at: st.lastUpdatedAt,
-  }
+  return total + (int(drops) || 0)
 }
 
-function buildDistributions() {
+// /api/overview：按池分条返回（一级池 1 条 + 每个二级池 1 条），字段为各页所需超集
+function buildOverview() {
   const st = getState()
-  const latencyBuckets = [
-    { name: '<200ms', min: 0, max: 200 },
-    { name: '200-500ms', min: 200, max: 500 },
-    { name: '500-1000ms', min: 500, max: 1000 },
-    { name: '1000-2000ms', min: 1000, max: 2000 },
-    { name: '2000-3000ms', min: 2000, max: 3000 },
-    { name: '≥3000ms', min: 3000, max: Infinity },
-  ]
-  const latencyCounts = latencyBuckets.map((b) => ({ name: b.name, value: 0 }))
-
-  const ttlBuckets = [
-    { name: '<1min', min: 0, max: 60 },
-    { name: '1-5min', min: 60, max: 300 },
-    { name: '5-30min', min: 300, max: 1800 },
-    { name: '30min-1h', min: 1800, max: 3600 },
-    { name: '1-24h', min: 3600, max: 86400 },
-    { name: '≥24h', min: 86400, max: Infinity },
-  ]
-  const ttlCounts = ttlBuckets.map((b) => ({ name: b.name, value: 0 }))
-  let noTtl = 0
-
   const now = Date.now() / 1000
+  const l1 = st.level1
 
-  const scan = (ips, hasLatency) => {
-    if (!Array.isArray(ips)) return
+  let level1 = null
+  if (l1) {
+    const pulled = int(l1.total_pulled) || 0
+    const entered = int(l1.total_entered) || 0
+    level1 = {
+      ip_count: int(l1.pool_size),
+      uptime: num(l1.uptime),
+      total_pulled: pulled,
+      pass_rate: pulled > 0 ? entered / pulled : null,
+      duplicate_rate: pulled > 0 ? (int(l1.total_duplicates) || 0) / pulled : null,
+      by_proto: protoMap(l1.counts),
+      errors: l1.errors || {},
+      drops: int(l1.drops) || 0,
+      errors_total: poolErrorsTotal(l1.errors, l1.drops),
+      api_call_count: int(l1.api_call_count),
+      avg_remaining: avgRemainingSeconds(st.level1Ips, now),
+    }
+  }
+
+  const sites = []
+  const siteList = st.proxy ? st.proxy.sites || [] : []
+  for (const s of siteList) {
+    const name = s.name
+    const data = st.sites[name]
+    if (!data || !data.status) {
+      sites.push({
+        name,
+        reachable: false,
+        target_url: s.target_url || null,
+        base_url: s.base_url || null,
+        ip_count: 0, free: 0, leased: 0,
+        uptime: null, total_pulled: 0, pass_rate: null,
+        avg_latency: null, by_proto: { http: 0, https: 0, socks4: 0, socks5: 0 },
+        errors: {}, drops: 0, errors_total: 0,
+        api_call_count: null, avg_remaining: null,
+      })
+      continue
+    }
+    const d = data.status
+    const ps = d.pool_stats || {}
+    const pulled = int(d.total_pulled) || 0
+    const entered = int(d.total_entered) || 0
+    sites.push({
+      name,
+      reachable: true,
+      target_url: s.target_url || null,
+      base_url: s.base_url || null,
+      ip_count: int(ps.total) || 0,
+      free: int(ps.free_total) || 0,
+      leased: int(ps.leased_total) || 0,
+      uptime: num(d.uptime),
+      total_pulled: pulled,
+      pass_rate: pulled > 0 ? entered / pulled : null,
+      avg_latency: latencyStats(data.ips).avg,
+      by_proto: protoMap(ps.by_proto),
+      errors: d.errors || {},
+      drops: int(d.drops) || 0,
+      errors_total: poolErrorsTotal(d.errors, d.drops),
+      api_call_count: int(d.api_call_count),
+      avg_remaining: avgRemainingSeconds(data.ips, now),
+    })
+  }
+
+  return { updated_at: st.lastUpdatedAt, level1, sites }
+}
+
+// TTL 剩余分布分桶（剩余 = created_at + ttl - now；已过期归入 ≤1min）
+const TTL_BUCKETS = [
+  { name: '≤1min', min: 0, max: 60 },
+  { name: '1~3min', min: 60, max: 180 },
+  { name: '3~5min', min: 180, max: 300 },
+  { name: '5~10min', min: 300, max: 600 },
+  { name: '10~30min', min: 600, max: 1800 },
+  { name: '30min~2h', min: 1800, max: 7200 },
+  { name: '2h~6h', min: 7200, max: 21600 },
+  { name: '6h~12h', min: 21600, max: 43200 },
+  { name: '12h~24h', min: 43200, max: 86400 },
+  { name: '≥24h', min: 86400, max: Infinity },
+]
+
+const LATENCY_BUCKETS = [
+  { name: '<200ms', min: 0, max: 200 },
+  { name: '200-500ms', min: 200, max: 500 },
+  { name: '500-1000ms', min: 500, max: 1000 },
+  { name: '1000-2000ms', min: 1000, max: 2000 },
+  { name: '2000-3000ms', min: 2000, max: 3000 },
+  { name: '≥3000ms', min: 3000, max: Infinity },
+]
+
+function ttlDistribution(ips, now) {
+  const counts = TTL_BUCKETS.map((b) => ({ name: b.name, value: 0 }))
+  let noTtl = 0
+  if (Array.isArray(ips)) {
     for (const ip of ips) {
-      if (hasLatency) {
-        const l = num(ip.latency_ms)
-        if (l !== null) {
-          for (let i = 0; i < latencyBuckets.length; i++) {
-            const b = latencyBuckets[i]
-            if (l >= b.min && l < b.max) { latencyCounts[i].value += 1; break }
-          }
-        }
-      }
       const ttl = num(ip.ttl)
-      const created = num(ip.created_at)
       if (ttl === null) {
         noTtl += 1
         continue
       }
-      const remaining = (created || 0) + ttl - now
-      if (remaining <= 0) continue
-      for (let i = 0; i < ttlBuckets.length; i++) {
-        const b = ttlBuckets[i]
-        if (remaining >= b.min && remaining < b.max) { ttlCounts[i].value += 1; break }
+      const created = num(ip.created_at) || 0
+      const remaining = Math.max(0, created + ttl - now)
+      for (let i = 0; i < TTL_BUCKETS.length; i++) {
+        const b = TTL_BUCKETS[i]
+        if (remaining >= b.min && remaining < b.max) {
+          counts[i].value += 1
+          break
+        }
       }
     }
   }
+  return [...counts, { name: '永久/无TTL', value: noTtl }]
+}
 
-  for (const s of Object.values(st.sites)) scan(s.ips, true)
-  scan(st.level1Ips, false)
-
-  return {
-    latency: latencyCounts,
-    ttl: [...ttlCounts, { name: '永久/无TTL', value: noTtl }],
-    updated_at: st.lastUpdatedAt,
+function latencyDistribution(ips) {
+  const counts = LATENCY_BUCKETS.map((b) => ({ name: b.name, value: 0 }))
+  if (!Array.isArray(ips)) return counts
+  for (const ip of ips) {
+    const l = num(ip.latency_ms)
+    if (l === null) continue
+    for (let i = 0; i < LATENCY_BUCKETS.length; i++) {
+      const b = LATENCY_BUCKETS[i]
+      if (l >= b.min && l < b.max) {
+        counts[i].value += 1
+        break
+      }
+    }
   }
+  return counts
+}
+
+// /api/distributions：按池返回分布（level1 仅 TTL；二级池 TTL + 延迟）
+function buildDistributions() {
+  const st = getState()
+  const now = Date.now() / 1000
+  const pools = { level1: { ttl: ttlDistribution(st.level1Ips, now) } }
+  for (const [name, s] of Object.entries(st.sites)) {
+    pools[name] = {
+      ttl: ttlDistribution(s.ips, now),
+      latency: latencyDistribution(s.ips),
+    }
+  }
+  return { updated_at: st.lastUpdatedAt, pools }
 }
 
 function buildStats() {
@@ -227,7 +246,10 @@ function buildStats() {
     sites,
     proxy: proxy
       ? {
+          uptime: num(proxy.uptime),
+          started_at: proxy.started_at || null,
           total_calls: proxy.stats ? proxy.stats.total_calls : 0,
+          calls_by_ip: proxy.stats ? proxy.stats.calls_by_ip || {} : {},
           calls_by_site: proxy.stats ? proxy.stats.calls_by_site || {} : {},
           errors: proxy.stats ? proxy.stats.errors || {} : {},
         }
@@ -306,6 +328,37 @@ app.get('/api/sites/:site/status', (req, res) => {
   const s = st.sites[req.params.site]
   if (!s) return res.json(err(40400, `site not found: ${req.params.site}`))
   res.json(ok(s.status))
+})
+
+// 一键释放站点全部租赁 IP：BFF 代理转发上游 release-all（前端禁止直连二级池）
+app.post('/api/sites/:site/release-all', async (req, res) => {
+  const st = getState()
+  const entry = (st.proxy && st.proxy.sites ? st.proxy.sites : []).find(
+    (s) => s.name === req.params.site,
+  )
+  if (!entry || !entry.base_url) {
+    return res.json(err(40400, `site not found: ${req.params.site}`))
+  }
+  const base = entry.base_url.replace(/\/+$/, '')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5000)
+  try {
+    const r = await fetch(`${base}/api/v1/ips/release-all`, {
+      method: 'POST',
+      signal: controller.signal,
+    })
+    let body
+    try {
+      body = await r.json()
+    } catch {
+      body = err(50200, `invalid upstream response: HTTP ${r.status}`)
+    }
+    res.json(body)
+  } catch (e) {
+    res.json(err(50200, `upstream error: ${e && e.message ? e.message : e}`))
+  } finally {
+    clearTimeout(timer)
+  }
 })
 
 app.get('/api/history', (req, res) => {

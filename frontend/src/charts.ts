@@ -82,3 +82,23 @@ export function stackedBarChart(
     })),
   }
 }
+
+export function pieChart(items: BarItem[]): EChartsOption {
+  return {
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { bottom: 0 },
+    series: [
+      {
+        type: 'pie',
+        radius: ['40%', '66%'],
+        center: ['50%', '44%'],
+        data: items.map((i) => ({
+          name: i.name,
+          value: i.value,
+          itemStyle: i.color ? { color: i.color } : undefined,
+        })),
+        label: { formatter: '{b}: {c}' },
+      },
+    ],
+  }
+}
