@@ -4,7 +4,7 @@
 
 ## 1. 项目简介
 
-NetFountain 是一个两级代理 IP 池系统，由四个目录组成：
+NetFountain 是一个两级代理 IP 池系统，由四个后端目录与一个前端面板子项目组成：
 
 | 目录 | 角色 | 默认端口 | 说明 |
 |---|---|---|---|
@@ -12,6 +12,7 @@ NetFountain 是一个两级代理 IP 池系统，由四个目录组成：
 | `level1_pool` | 一级池 | 8000 | 从供应商拉取 IP → 代理可达性测试 → 入环形池（上限 + TTL 淘汰） |
 | `level2_pool` | 二级池 | 8001+ | 从一级池增量同步 → 站点连通测试（<2000ms）→ 租赁池。**每站点一份配置、一个独立进程、一个独立端口** |
 | `proxy` | 代理层 | 9000 | 按站点标识路由到对应二级池并纯透传请求/响应，每分钟热更新路由表 |
+| `frontend` | 前端面板（探针界面）+ BFF | 3000/5173 | 自包含 Node 子项目（Express5 + node:sqlite + Vue3），定时采集三服务数据做可视化；浏览器只访问 BFF 端口 3000 |
 
 ```
   供应商公网 IP 池 (HTTP)
@@ -36,19 +37,27 @@ NetFountain 是一个两级代理 IP 池系统，由四个目录组成：
   └──────────────┬───────────────┘
                  │ HTTP
                  ▼
+  ┌──────────────────────────────┐
+  │   前端面板 frontend (:3000)   │   端口 3000（dev :5173）
+  │  总览/IP列表/站点/统计分析    │   BFF 定时采集三服务，聚合 /api/* + Vue3 面板
+  └──────────────┬───────────────┘
+                 │ HTTP
+                 ▼
                用户
 ```
 
-三个业务项目是**相互独立**的服务，代码零耦合，仅通过 HTTP API 通信。
+三个业务项目是**相互独立**的服务，代码零耦合，仅通过 HTTP API 通信。前端面板为自包含 Node 子项目，仅经 HTTP 访问三个服务（浏览器只访问 3000，禁止直连 8000/8001/9000）。
 
 ## 2. 环境要求
 
 - **Python**：≥ 3.11（项目以 Python 3.14 开发验证，推荐使用 3.14）。
+- **Node.js**：≥ 22.5（仅前端面板需要；`node:sqlite` 稳定版要求，本机以 24.18 验证）。
 - **操作系统**：Linux / Windows / macOS 均可（无平台相关代码）。
 - **网络**：
   - 部署一级池的机器需能访问代理供应商 API（默认 `http://api.91http.com/v1/get-ip`）。
   - 部署二级池的机器需能访问一级池（`level1.base_url`）以及被代理访问的目标站点（`site.target_url`）。
   - 部署代理层的机器需能访问各二级池（`sites[].base_url`）。
+  - 部署前端面板（BFF）的机器需能访问一级池（8000）与代理层（9000，站点列表经 `/health` 动态发现）；用户浏览器只需访问 BFF 端口 3000。
   - 多机部署时各服务间按需互相连通，并放行对应端口防火墙。
 
 ## 3. 获取代码
@@ -90,6 +99,15 @@ pip install -r proxy/requirements.txt
 
 ```bash
 python -c "import ip_pool_common; print(ip_pool_common.__file__)"
+```
+
+### 前端面板（探针界面）
+
+自包含 Node 子项目，零原生编译依赖，仅需 `npm install`（详见 `frontend/README.md`）：
+
+```bash
+cd frontend
+npm install
 ```
 
 ## 5. 配置说明
@@ -223,9 +241,30 @@ sites:                                   # 站点路由表：site → 二级池�
 - `sites[].base_url` 指向对应二级池进程地址；多机部署时填二级池机器 IP。
 - `level1.base_url` 指向一级池进程地址，供代理层 `/health` 实时聚合一级池状态；多机部署时填一级池机器 IP。
 
+### 5.4 前端面板 `frontend/`（纯环境变量，无 YAML）
+
+前端面板 = Vue 面板 + 聚合后端 BFF（`server/server.js`，唯一入口）。无配置文件，全部可调项走环境变量（定义于 `server/config.js`）：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `BFF_PORT` | 3000 | BFF 对外端口（浏览器只访问此端口） |
+| `LEVEL1_URL` | `http://127.0.0.1:8000` | 一级池地址 |
+| `PROXY_URL` | `http://127.0.0.1:9000` | 代理层地址（站点列表经 `/health` 动态发现） |
+| `COLLECT_INTERVAL_MS` | 2000 | 指标聚合表写入周期（毫秒） |
+| `SNAPSHOT_INTERVAL_MS` | 30000 | IP 全量快照落库周期（毫秒） |
+| `FETCH_TIMEOUT_MS` | 800 | 单次采集超时，超时即中断跳过、不阻塞循环 |
+| `RETENTION_DAYS` | 10 | 历史数据保留天数（每日 0 点清理） |
+| `DB_FILE` | `netfountain.db` | SQLite 文件路径（落在 `frontend/` 根目录，WAL 模式） |
+
+要点：
+
+- **浏览器只访问 BFF `/api/*`**，禁止直连 8000/8001/9000；唯一写操作 `release-all` 由 BFF 代理转发。
+- 历史查询按时间范围降采样聚合（1h/6h/24h/7d），绝不返回秒级原始数据；存储为 SQLite 单文件，无 MySQL/Redis。
+- 多机部署时 `LEVEL1_URL` / `PROXY_URL` 填一级池 / 代理层所在机器 IP。
+
 ## 6. 启动服务
 
-建议按 **一级池 → 二级池 → 代理层** 的顺序启动。二级池依赖一级池可用（首次全量同步）；代理层可随时启动，但站点未配置或对应二级池不可达时会返回错误。
+建议按 **一级池 → 二级池 → 代理层** 的顺序启动。二级池依赖一级池可用（首次全量同步）；代理层可随时启动，但站点未配置或对应二级池不可达时会返回错误。前端面板建议最后启动；三服务未就绪时面板不白屏（顶部错误横幅提示并保留上次数据）。
 
 > 说明：`uvicorn` 的 `--host`/`--port` 参数只是监听参数；服务实际使用的配置以 `config/*.yaml` 为准（如端口、站点、上游地址）。`--app-dir <目录>` 使 uvicorn 从对应项目目录加载 `app.main`。
 
@@ -258,13 +297,25 @@ python -m app.launcher --config config/level2_pool.yaml
 uvicorn app.main:app --app-dir proxy --host 0.0.0.0 --port 9000
 ```
 
-### 6.4 多机部署要点
+### 6.4 前端面板（探针界面，端口 3000）
+
+```bash
+cd frontend
+npm run build      # vue-tsc 类型检查 + vite 打包，必须零报错
+npm start          # node server/server.js → http://localhost:3000
+```
+
+- 生产由同一个 Node 进程托管静态 `dist/` 与 `/api`（BFF）；开发调试用 `npm run dev`（BFF 3000 与 Vite 5173 一键同起）。
+- 面板四个页面：总览 / IP 列表 / 站点视图 / 统计分析；站点列表从代理层 `/health` 动态发现，无需额外配置。
+
+### 6.5 多机部署要点
 
 - 各服务 `service.host` 保持 `0.0.0.0`（监听所有网卡），让对端机器可访问。
 - 把下游地址从 `127.0.0.1` 改为对端机器 IP：
   - 二级池配置中的 `level1.base_url` → 一级池机器 IP。
   - 代理层 `proxy_routes.yaml` 中的 `sites[].base_url` → 各二级池机器 IP。
-- 在每台机器防火墙 / 云安全组放行对应端口（8000 / 8001+ / 9000）。
+- 在每台机器防火墙 / 云安全组放行对应端口（8000 / 8001+ / 9000 / 3000）。
+- 前端面板：`LEVEL1_URL` / `PROXY_URL` 改为一级池 / 代理层所在机器 IP。
 
 ## 7. 部署验证
 
@@ -279,6 +330,9 @@ curl http://<level1-host>:8000/api/v1/status
 
 # 二级池状态（含池统计、最近同步 id、错误计数）
 curl http://<level2-host>:8001/api/v1/status
+
+# 前端面板 BFF 存活检查
+curl http://<bff-host>:3000/api/health
 ```
 
 成功标准：
@@ -287,6 +341,7 @@ curl http://<level2-host>:8001/api/v1/status
 - 代理层 `/api/v1/health` 的 `data.sites` 中能看到配置的全部站点，`data.started_at` / `data.stats` 展示代理层启动时间与 API 被调用次数，`data.pools.level1` 与 `data.pools.sites` 展示实时聚合的一级池 / 各站点二级池状态。
 - 一级池 `status` 的 `pool_size` 随时间增长（供应商可用时）。
 - 二级池 `status` 的 `pool_stats.total` 随时间增长，`last_synced_id` 持续前进（说明与一级池同步正常）。
+- 浏览器打开 `http://<bff-host>:3000`：总览页能看到一级池与各二级池横条（IP 数 / 通过率 / 错误数等），`/api/health`、`/api/overview` 返回 `code=0`；三服务未就绪时面板顶部显示错误横幅但不白屏。
 
 ## 8. 运维与排障
 
@@ -308,6 +363,8 @@ User=netfountain
 [Install]
 WantedBy=multi-user.target
 ```
+
+前端面板同理（`WorkingDirectory` 指向 `frontend/`，`ExecStart=/path/to/node server/server.js`）。
 
 ### 8.2 日志
 
@@ -332,10 +389,13 @@ WantedBy=multi-user.target
 | 代理层返回 `40400`（site not configured） | 请求站点未在路由表配置 / 路由表未重载 | 检查 `proxy_routes.yaml` `sites` 条目与站点名；等待一个 `reload_interval` |
 | 代理层返回 `50200`（upstream error） | 对应二级池未启动或不可达 | 启动/检查二级池；确认 `sites[].base_url` 正确 |
 | 二级池启动后连到错误站点 | 使用了测试残留的 `level2_pool.yaml` | 用 `level2_pool.example.yaml` 模板重写配置 |
+| 前端面板显示错误横幅 / 数据为空 | 三服务未启动或 `LEVEL1_URL` / `PROXY_URL` 配置错误 | `curl` 验证 8000 / 9000 可达；核对 BFF 环境变量 |
+| 面板历史图表无数据 | BFF 刚启动尚未落库 / 数据被保留期清理 | 等待采集周期（默认 2s 写指标、30s 写快照）；检查 `RETENTION_DAYS` 与 `netfountain.db` |
+| 前端面板 3000 端口被占用 | 端口冲突 | 换端口启动，如 `BFF_PORT=3001 npm start` |
 
 ### 8.4 停止服务
 
-直接终止各 uvicorn 进程即可。优雅停止：发送 `SIGINT`（Ctrl+C）或 `SIGTERM`，FastAPI lifespan 会取消后台任务并释放 aiohttp 会话。
+直接终止各 uvicorn 进程即可。优雅停止：发送 `SIGINT`（Ctrl+C）或 `SIGTERM`，FastAPI lifespan 会取消后台任务并释放 aiohttp 会话。前端面板为 Node 进程，直接终止 `node server/server.js` 即可（SQLite WAL 模式，无长事务，可安全中断）。
 
 ## 9. 附：测试运行（可选）
 
@@ -354,3 +414,5 @@ cd e2e && pip install -r requirements.txt && pytest
 ```
 
 > 端到端测试默认跳过性能用例，需显式运行：`pytest -m perf`。
+>
+> 前端面板改动后须 `cd frontend && npm run build`（vue-tsc 类型检查 + vite 打包）零报错。

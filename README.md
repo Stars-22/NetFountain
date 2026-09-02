@@ -1,6 +1,6 @@
 # NetFountain —— 两级代理 IP 池系统
 
-一个两级代理 IP 池系统，由四个目录组成：`common`（公共库）、`level1_pool`（一级池）、`level2_pool`（二级池）、`proxy`（代理层）。三个业务项目是独立服务，均依赖公共库 `ip_pool_common`，项目之间不相互 import，仅通过 HTTP API 通信。
+一个两级代理 IP 池系统，由四个后端目录组成：`common`（公共库）、`level1_pool`（一级池）、`level2_pool`（二级池）、`proxy`（代理层），外加自包含子项目 `frontend`（Web 面板 + 数据聚合后端 BFF）。三个业务项目是独立服务，均依赖公共库 `ip_pool_common`，项目之间不相互 import，仅通过 HTTP API 通信；`frontend` 仅经 HTTP 访问三个服务，不修改其后端代码。
 
 ## 系统架构
 
@@ -29,6 +29,12 @@
  └──────────────┬───────────────┘
                 │ HTTP
                 ▼
+ ┌──────────────────────────────┐
+ │   前端面板 frontend (:3000)   │  BFF 定时采集三服务，聚合 /api/*
+ │  总览/IP列表/站点/统计分析    │  Express5+node:sqlite+Vue3+ECharts（dev :5173）
+ └──────────────┬───────────────┘
+                │ HTTP（浏览器只访问 3000，禁止直连 8000/8001/9000）
+                ▼
               用户
 ```
 
@@ -42,7 +48,7 @@
 | `proxy` | 代理层：按站点标识路由到对应二级池并纯透传请求/响应，每分钟热更新路由表。 | 9000 |
 | `frontend` | Web 面板 + 数据聚合后端 BFF（Vue3 + Express5 + node:sqlite）：只经 HTTP 定时聚合三服务数据并提供可视化。 | 3000/5173 |
 
-## 三服务安装与启动
+## 服务安装与启动
 
 各项目先安装依赖（公共库以 editable 方式引用），再以 uvicorn 启动。
 
@@ -60,6 +66,15 @@ cd level2_pool && python -m app.launcher
 # 代理层
 pip install -r proxy/requirements.txt
 uvicorn app.main:app --app-dir proxy --host 0.0.0.0 --port 9000
+```
+
+前端面板（探针界面，自包含子项目，需 Node ≥ 22.5）定时轮询三个服务做聚合展示（总览 / IP 列表 / 站点视图 / 统计分析），浏览器只访问 3000 端口：
+
+```bash
+cd frontend
+npm install
+npm run dev                  # 开发：BFF(3000) 与 Vite(5173) 一键同起
+npm run build && npm start   # 生产：构建后同进程托管 dist/ → http://localhost:3000
 ```
 
 ## 文档索引
