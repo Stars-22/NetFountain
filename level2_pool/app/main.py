@@ -57,15 +57,21 @@ def create_app(
     sync_task: SyncTask | None = None,
     start_time: float | None = None,
     start_tasks: bool = True,
+    configure_logging: bool = True,
 ) -> FastAPI:
-    """装配 FastAPI 应用；组件可注入，未注入的在 lifespan 内按配置创建。"""
+    """装配 FastAPI 应用；组件可注入，未注入的在 lifespan 内按配置创建。
+
+    ``configure_logging=False`` 用于多开模式：由 launcher 统一初始化 stdout 并按子池拆分文件日志，
+    避免各子池重复初始化 stdout handler。
+    """
     if settings is None:
         if os.path.exists(_CONFIG_PATH):
             settings = load_level2_settings(_CONFIG_PATH)
         else:
             settings = load_level2_settings()
 
-    setup_logging("level2_pool", level=settings.service.log_level)
+    if configure_logging:
+        setup_logging("level2_pool", level=settings.service.log_level)
 
     pool = pool or Level2Pool()
     stats = stats or ServiceStats()

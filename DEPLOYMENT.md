@@ -139,39 +139,51 @@ ttl_sweep_interval: 5.0    # TTL 过期清理周期（秒）
 
 > **重要提醒**：仓库中现有 `level2_pool/config/level2_pool.yaml` 是**测试残留配置**（端口 8111、站点名 `ttl`、指向本地 mock 站点 `http://127.0.0.1:9100/`）。**正式部署必须用模板 `config/level2_pool.example.yaml` 改写**，否则会启动一个连到本机 mock 服务的错误实例。
 
+二级池支持**一个配置文件自动多开**：`global`（全局默认）+ `pools`（子池列表），子池配置深合并全局、字段优先；仅配置一个子池即单开。启动用 `python -m app.launcher`。
+
 模板 `config/level2_pool.example.yaml` 内容：
 
 ```yaml
-service:
-  host: 0.0.0.0
-  port: 8001               # 每个站点使用独立端口
-  log_level: INFO
+global:
+  service:
+    host: 0.0.0.0
+    log_level: INFO
+  level1:
+    base_url: http://127.0.0.1:8000    # 一级池地址（多机部署时填一级池机器 IP）
+  sync:
+    interval: 3.0            # 增量同步周期（秒）
+    timeout: 5.0             # 同步超时（秒）
+  test:
+    latency_threshold_ms: 2000   # 站点连通延迟阈值，>2000ms 不入池
+    connect_timeout: 3.0         # 连通测试超时（秒）
+    concurrency: 20              # 测试并发数
+    workers: 2                   # 测试 worker 数（缺省自动 max(1, concurrency//10)）
+    buffer: 20                   # 待测批次有界队列容量（队满丢最旧批次，drops 累计）
+  revalidate_interval: 60.0      # 周期复验间隔（秒）
+  ttl_sweep_interval: 5.0        # TTL 过期清理周期（秒）
+  reload_interval: 5.0           # 配置文件热检查周期（秒）
 
-site:
-  name: site_a             # 站点标识（代理层路由用，需与 proxy_routes.yaml 一致）
-  target_url: http://www.baidu.com   # 该站点连通测试的目标 URL
-
-level1:
-  base_url: http://127.0.0.1:8000    # 一级池地址（多机部署时填一级池机器 IP）
-
-sync:
-  interval: 3.0            # 增量同步周期（秒）
-  timeout: 5.0             # 同步超时（秒）
-
-test:
-  latency_threshold_ms: 2000   # 站点连通延迟阈值，>2000ms 不入池
-  connect_timeout: 3.0         # 连通测试超时（秒）
-  concurrency: 20              # 测试并发数
-  workers: 2                   # 测试 worker 数（缺省自动 max(1, concurrency//10)）
-  buffer: 20                   # 待测批次有界队列容量（队满丢最旧批次，drops 累计）
-
-revalidate_interval: 60.0      # 周期复验间隔（秒）
-ttl_sweep_interval: 5.0        # TTL 过期清理周期（秒）
+pools:
+  - site:
+      name: site_a             # 站点标识（代理层路由用，需与 proxy_routes.yaml 一致）
+      target_url: http://www.baidu.com   # 该站点连通测试的目标 URL
+    service:
+      port: 8001               # 必填，每子池独立端口
+    enabled: true              # false = 软关闭该子池（保留配置但不启动）
+  - site:
+      name: site_b
+      target_url: https://www.example.com
+    service:
+      port: 8002
+      log_level: DEBUG         # 子池覆盖全局 service.log_level（示例）
 ```
 
 要点：
 
-- **每站点一套**：每个站点复制一份配置为 `level2_pool/config/level2_pool.yaml`，修改 `site.name`、`site.target_url`、`service.port`，然后以该进程目录启动一个实例。站点名全局唯一，作为代理层的路由键。
+- **多开**：`pools` 列表内每项一个子池（站点），`python -m app.launcher` 单进程多线程启动全部；列表仅 1 项即单开。站点名全局唯一，作为代理层的路由键。
+- **配置优先级**：子池字段覆盖 `global`；子池未写的字段回退全局；`service.port` 每子池必填。
+- **热更新（软启停）**：修改并保存配置文件后，等待一个 `reload_interval`：新增/重新 `enabled` 的子池自动启动、删除或 `enabled: false` 的子池自动关闭、配置有改动的子池自动重启。无需重启整个进程。
+- **每池日志**：stdout 聚合展示（多开时每行带子池名，可用 `grep` 过滤）；如需按子池拆分到独立文件，配置 `global.log_dir`（相对运行目录），每个子池写入 `logs/level2_pool_<site>.log`，用 `tail -f` 单独查看。
 - 配置里的 `site.name` 必须与代理层 `proxy_routes.yaml` 中 `sites[].name` 完全一致（大小写敏感）。
 - 单机部署时 `level1.base_url` 用 `127.0.0.1`；多机部署时填一级池所在机器 IP。
 
@@ -225,21 +237,20 @@ uvicorn app.main:app --app-dir level1_pool --host 0.0.0.0 --port 8000
 
 确认 `level1_pool/config/level1_pool.yaml` 中 `service.port` 为 8000（或与 `--port` 一致）。启动后开始周期性拉取并测试代理。
 
-### 6.2 二级池（每站点一个实例）
+### 6.2 二级池（单进程多开，推荐）
 
-站点 A（配置文件 `level2_pool/config/level2_pool.yaml` 中 `port: 8001`）：
-
-```bash
-uvicorn app.main:app --app-dir level2_pool --host 0.0.0.0 --port 8001
-```
-
-站点 B（复制配置，改 `site.name`/`target_url`/`port: 8002`）：
+用 `python -m app.launcher` 从 `level2_pool` 目录启动，自动按 `config/level2_pool.yaml` 中 `pools` 列表拉起全部子池（单进程多线程，各子池独立端口）：
 
 ```bash
-uvicorn app.main:app --app-dir level2_pool --host 0.0.0.0 --port 8002
+cd level2_pool
+python -m app.launcher
+# 或指定配置文件
+python -m app.launcher --config config/level2_pool.yaml
 ```
 
-> 多站点部署时，请把各站点配置分别放在各自进程可访问的 `level2_pool/config/level2_pool.yaml` 位置。每个实例必须使用各自的配置（站点名、端口不同）。
+> 站点 A（`port: 8001`）与站点 B（`port: 8002`）均在一个进程内同时运行。修改配置文件后等待一个 `reload_interval`，即可热增删/启停/重启对应子池，无需重启进程。
+>
+> 仍兼容旧的单实例启动方式 `uvicorn app.main:app --port <port>`（读取同一配置文件，含 `pools` 时取第一个子池）。
 
 ### 6.3 代理层（端口 9000）
 

@@ -1,25 +1,36 @@
-service:
-  host: 0.0.0.0
-  port: 8001
-  log_level: INFO
+# 二级池多开配置模板：global（全局默认）+ pools（子池列表）。
+# 每个子池配置深合并全局配置，子池字段优先；未写字段回退全局。
+# 仅配置一个子池时单开；通过 launcher 启动：python -m app.launcher
+global:
+  service:
+    host: 0.0.0.0
+    log_level: INFO
+  level1:
+    base_url: http://127.0.0.1:8000
+  sync:
+    interval: 3.0
+    timeout: 5.0
+  test:
+    latency_threshold_ms: 2000
+    connect_timeout: 3.0
+    concurrency: 20
+    workers: 2            # None=自动 max(1, concurrency//10)
+    buffer: 20
+  revalidate_interval: 60.0
+  ttl_sweep_interval: 5.0
+  reload_interval: 5.0   # 配置文件热检查周期（秒），改动即热增删/重启对应子池
+  log_dir: logs          # 可选：子池日志目录（相对运行目录），每子池写 logs/level2_pool_<site>.log
 
-site:
-  name: site_a
-  target_url: http://www.baidu.com
-
-level1:
-  base_url: http://127.0.0.1:8000
-
-sync:
-  interval: 3.0
-  timeout: 5.0
-
-test:
-  latency_threshold_ms: 2000
-  connect_timeout: 3.0
-  concurrency: 20
-  workers: 2  # 缺省自动 = max(1, concurrency//10)
-  buffer: 20
-
-revalidate_interval: 60.0
-ttl_sweep_interval: 5.0
+pools:
+  - site:
+      name: site_a             # 站点标识（代理层路由键，需与 proxy_routes.yaml 一致）
+      target_url: http://www.baidu.com   # 该站点连通测试目标 URL
+    service:
+      port: 8001               # 必填，每子池独立端口
+    enabled: true              # false = 软关闭该子池（保留配置但不启动）
+  - site:
+      name: site_b
+      target_url: https://www.example.com
+    service:
+      port: 8002
+      log_level: DEBUG         # 子池覆盖全局 service.log_level（示例）

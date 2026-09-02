@@ -38,7 +38,7 @@
 |---|---|---|
 | `common` | 公共库 `ip_pool_common`：数据模型、代理测试原语、配置加载、日志、API 通用件。被三项目依赖，不依赖任何业务项目。 | — |
 | `level1_pool` | 一级池：从供应商（91HTTP / default_http）拉取 IP、代理可达性测试（拉取与测试解耦多 worker）、按 `proxy_url` 去重入环形池、TTL/容量淘汰、对外查询 API。 | 8000 |
-| `level2_pool` | 二级池：从一级池增量同步、站点连通测试（延迟 < 2000ms 才入池）、租赁分配/释放/删除、周期复验。每站点一份配置、独立进程。 | 8001+ |
+| `level2_pool` | 二级池：从一级池增量同步、站点连通测试（延迟 < 2000ms 才入池）、租赁分配/释放/删除、周期复验。一个配置文件 `global`+`pools` 自动多开（单进程多线程），子池配置覆盖全局。 | 8001+ |
 | `proxy` | 代理层：按站点标识路由到对应二级池并纯透传请求/响应，每分钟热更新路由表。 | 9000 |
 | `frontend` | Web 面板 + 数据聚合后端 BFF（Vue3 + Express5 + node:sqlite）：只经 HTTP 定时聚合三服务数据并提供可视化。 | 3000/5173 |
 
@@ -51,9 +51,11 @@
 pip install -r level1_pool/requirements.txt
 uvicorn app.main:app --app-dir level1_pool --host 0.0.0.0 --port 8000
 
-# 二级池（每站点一份配置，端口独立）
+# 二级池（单进程多开，每站点一个子池线程）
 pip install -r level2_pool/requirements.txt
-uvicorn app.main:app --app-dir level2_pool --host 0.0.0.0 --port 8001
+cd level2_pool && python -m app.launcher
+# 旧方式（单实例，读取同一配置文件）
+# uvicorn app.main:app --app-dir level2_pool --host 0.0.0.0 --port 8001
 
 # 代理层
 pip install -r proxy/requirements.txt

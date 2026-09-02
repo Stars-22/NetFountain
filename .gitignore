@@ -12,3 +12,5 @@ e2e/.pytest_cache/
 level1_pool/config/level1_pool.yaml
 level2_pool/config/level2_pool.yaml
 e2e/configs/level1.yaml
+# 二级池多开运行期子池日志
+level2_pool/logs/
