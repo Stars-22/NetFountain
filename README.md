@@ -40,6 +40,7 @@
 | `level1_pool` | 一级池：从供应商（91HTTP / default_http）拉取 IP、代理可达性测试（拉取与测试解耦多 worker）、按 `proxy_url` 去重入环形池、TTL/容量淘汰、对外查询 API。 | 8000 |
 | `level2_pool` | 二级池：从一级池增量同步、站点连通测试（延迟 < 2000ms 才入池）、租赁分配/释放/删除、周期复验。每站点一份配置、独立进程。 | 8001+ |
 | `proxy` | 代理层：按站点标识路由到对应二级池并纯透传请求/响应，每分钟热更新路由表。 | 9000 |
+| `frontend` | Web 面板 + 数据聚合后端 BFF（Vue3 + Express5 + node:sqlite）：只经 HTTP 定时聚合三服务数据并提供可视化。 | 3000/5173 |
 
 ## 三服务安装与启动
 
@@ -75,6 +76,7 @@ uvicorn app.main:app --app-dir proxy --host 0.0.0.0 --port 9000
 - 一级池：`level1_pool/项目策划书.md`、`level1_pool/测试计划书.md`
 - 二级池：`level2_pool/项目策划书.md`、`level2_pool/测试计划书.md`
 - 代理层：`proxy/项目策划书.md`、`proxy/测试计划书.md`
+- 前端面板 + BFF：`frontend/README.md`（技术文档：架构、BFF 设计、API、前端设计、约束）
 
 ## 跨服务契约要点
 
