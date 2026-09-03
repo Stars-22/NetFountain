@@ -15,7 +15,11 @@ export const config = {
   snapshotIntervalMs: Number(process.env.SNAPSHOT_INTERVAL_MS || 30000),
 
   // 单次采集超时：超过即中断跳过，不阻塞采集循环
-  fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS || 800),
+  fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS || 2500),
+
+  // 连续失败多少个采集周期才判定离线；未达阈值前保留上次成功数据（stale），
+  // 避免上游单次瞬时超时导致面板闪烁离线/空白
+  offlineAfterFailures: Number(process.env.OFFLINE_AFTER_FAILURES || 3),
 
   // 数据保留天数，每天 0 点清理
   retentionDays: Number(process.env.RETENTION_DAYS || 10),

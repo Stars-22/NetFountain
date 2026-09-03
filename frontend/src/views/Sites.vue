@@ -253,8 +253,11 @@ async function confirmRelease() {
           <template #label>
             <span>
               {{ s.name }}
-              <el-tag :type="s.reachable ? 'success' : 'danger'" size="small">
-                {{ s.reachable ? '在线' : '离线' }}
+              <el-tag
+                :type="!s.reachable ? 'danger' : s.stale ? 'warning' : 'success'"
+                size="small"
+              >
+                {{ !s.reachable ? '离线' : s.stale ? '数据延迟' : '在线' }}
               </el-tag>
             </span>
           </template>

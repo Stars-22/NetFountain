@@ -58,7 +58,14 @@ const siteStrips = computed<SiteStrip[]>(() => data.overview?.sites ?? [])
     />
 
     <el-card v-if="data.overview?.level1" shadow="hover" class="mb">
-      <template #header><span>一级 IP 池</span></template>
+      <template #header>
+        <div class="card-header">
+          <span>一级 IP 池</span>
+          <el-tag v-if="data.overview?.level1?.stale" type="warning" size="small">
+            数据延迟
+          </el-tag>
+        </div>
+      </template>
       <div class="strip">
         <BaseCardCell v-for="c in l1Cells" :key="c.label" :label="c.label" :value="c.value" />
       </div>
@@ -68,8 +75,11 @@ const siteStrips = computed<SiteStrip[]>(() => data.overview?.sites ?? [])
       <template #header>
         <div class="card-header">
           <span>二级 IP 池 · {{ s.name }}</span>
-          <el-tag :type="s.reachable ? 'success' : 'danger'" size="small">
-            {{ s.reachable ? '在线' : '离线' }}
+          <el-tag
+            :type="!s.reachable ? 'danger' : s.stale ? 'warning' : 'success'"
+            size="small"
+          >
+            {{ !s.reachable ? '离线' : s.stale ? '数据延迟' : '在线' }}
           </el-tag>
         </div>
       </template>

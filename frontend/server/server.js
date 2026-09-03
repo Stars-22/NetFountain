@@ -27,17 +27,18 @@ const RANGES = {
 
 function buildSiteSummaries() {
   const st = getState()
-  const sites = st.proxy ? st.proxy.sites || [] : []
+  // 直接遍历 state.sites（含 target_url/base_url 与 stale 标记），
+  // 不依赖 st.proxy 是否存活，避免代理层抖动时站点列表整体消失
   const out = []
-  for (const s of sites) {
-    const name = s.name
-    const data = st.sites[name]
-    if (!data || !data.status) {
+  for (const [name, entry] of Object.entries(st.sites)) {
+    const d = entry.status
+    if (!d) {
       out.push({
         name,
-        target_url: s.target_url || null,
-        base_url: s.base_url || null,
+        target_url: entry.target_url || null,
+        base_url: entry.base_url || null,
         reachable: false,
+        stale: false,
         total: 0, leased_total: 0, free_total: 0,
         by_proto: { http: 0, https: 0, socks4: 0, socks5: 0 },
         avg_latency: null, pass_rate: null,
@@ -45,16 +46,16 @@ function buildSiteSummaries() {
       })
       continue
     }
-    const d = data.status
     const ps = d.pool_stats || {}
-    const ls = latencyStats(data.ips)
+    const ls = latencyStats(entry.ips)
     const pulled = int(d.total_pulled) || 0
     const entered = int(d.total_entered) || 0
     out.push({
       name,
-      target_url: s.target_url || null,
-      base_url: s.base_url || null,
+      target_url: entry.target_url || null,
+      base_url: entry.base_url || null,
       reachable: true,
+      stale: !!entry.stale,
       total: int(ps.total) || 0,
       leased_total: int(ps.leased_total) || 0,
       free_total: int(ps.free_total) || 0,
@@ -99,20 +100,20 @@ function buildOverview() {
       errors_total: poolErrorsTotal(l1.errors, l1.drops),
       api_call_count: int(l1.api_call_count),
       avg_remaining: avgRemainingSeconds(st.level1Ips, now),
+      stale: !!st.level1Stale,
     }
   }
 
   const sites = []
-  const siteList = st.proxy ? st.proxy.sites || [] : []
-  for (const s of siteList) {
-    const name = s.name
-    const data = st.sites[name]
-    if (!data || !data.status) {
+  for (const [name, entry] of Object.entries(st.sites)) {
+    const d = entry.status
+    if (!d) {
       sites.push({
         name,
         reachable: false,
-        target_url: s.target_url || null,
-        base_url: s.base_url || null,
+        stale: false,
+        target_url: entry.target_url || null,
+        base_url: entry.base_url || null,
         ip_count: 0, free: 0, leased: 0,
         uptime: null, total_pulled: 0, pass_rate: null,
         avg_latency: null, by_proto: { http: 0, https: 0, socks4: 0, socks5: 0 },
@@ -121,28 +122,28 @@ function buildOverview() {
       })
       continue
     }
-    const d = data.status
     const ps = d.pool_stats || {}
     const pulled = int(d.total_pulled) || 0
     const entered = int(d.total_entered) || 0
     sites.push({
       name,
       reachable: true,
-      target_url: s.target_url || null,
-      base_url: s.base_url || null,
+      stale: !!entry.stale,
+      target_url: entry.target_url || null,
+      base_url: entry.base_url || null,
       ip_count: int(ps.total) || 0,
       free: int(ps.free_total) || 0,
       leased: int(ps.leased_total) || 0,
       uptime: num(d.uptime),
       total_pulled: pulled,
       pass_rate: pulled > 0 ? entered / pulled : null,
-      avg_latency: latencyStats(data.ips).avg,
+      avg_latency: latencyStats(entry.ips).avg,
       by_proto: protoMap(ps.by_proto),
       errors: d.errors || {},
       drops: int(d.drops) || 0,
       errors_total: poolErrorsTotal(d.errors, d.drops),
       api_call_count: int(d.api_call_count),
-      avg_remaining: avgRemainingSeconds(data.ips, now),
+      avg_remaining: avgRemainingSeconds(entry.ips, now),
     })
   }
 
@@ -338,9 +339,14 @@ app.get('/api/sites/:site/status', (req, res) => {
 // 一键释放站点全部租赁 IP：BFF 代理转发上游 release-all（前端禁止直连二级池）
 app.post('/api/sites/:site/release-all', async (req, res) => {
   const st = getState()
-  const entry = (st.proxy && st.proxy.sites ? st.proxy.sites : []).find(
-    (s) => s.name === req.params.site,
-  )
+  // 优先用采集缓存的 base_url（含 proxy 掉线期间），回退到代理层 health 站点表
+  const cached = st.sites[req.params.site]
+  const entry =
+    cached && cached.base_url
+      ? { base_url: cached.base_url }
+      : (st.proxy && st.proxy.sites ? st.proxy.sites : []).find(
+          (s) => s.name === req.params.site,
+        )
   if (!entry || !entry.base_url) {
     return res.json(err(40400, `site not found: ${req.params.site}`))
   }
@@ -366,13 +372,32 @@ app.post('/api/sites/:site/release-all', async (req, res) => {
   }
 })
 
-app.get('/api/history', (req, res) => {
+// /api/history 结果缓存：queryHistory 为全量窗口聚合（同步、可达秒级），
+// 图表页每个刷新 tick 都会请求，按 range 缓存 Promise（防并发击穿），
+// TTL 内直接复用，避免重算反复阻塞事件循环导致其他接口排队超时
+const HISTORY_CACHE_MS = Number(process.env.HISTORY_CACHE_MS || 30000)
+const historyCache = new Map() // range -> { at, promise }
+
+app.get('/api/history', async (req, res) => {
   const range = String(req.query.range || '24h')
   const bucketSec = RANGES[range]
   if (!bucketSec) return res.json(err(40000, `invalid range: ${range}`))
-  const sinceTs = Math.floor(Date.now() / 1000) - bucketSec * 200
-  const series = queryHistory(bucketSec, sinceTs)
-  res.json(ok({ range, bucketSec, series }))
+  const now = Date.now()
+  let entry = historyCache.get(range)
+  if (!entry || now - entry.at >= HISTORY_CACHE_MS) {
+    entry = {
+      at: now,
+      promise: queryHistory(bucketSec, Math.floor(Date.now() / 1000) - bucketSec * 200),
+    }
+    historyCache.set(range, entry)
+  }
+  try {
+    const series = await entry.promise
+    res.json(ok({ range, bucketSec, series }))
+  } catch (e) {
+    historyCache.delete(range)
+    res.json(err(50000, `history query failed: ${e && e.message ? e.message : e}`))
+  }
 })
 
 // ---- 生产静态托管 + SPA fallback ----

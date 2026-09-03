@@ -17,11 +17,13 @@ export interface Level1Strip {
   errors_total: number
   api_call_count: number | null
   avg_remaining: number | null
+  stale: boolean
 }
 
 export interface SiteStrip {
   name: string
   reachable: boolean
+  stale: boolean
   target_url: string | null
   base_url: string | null
   ip_count: number
@@ -50,6 +52,7 @@ export interface SiteSummary {
   target_url: string | null
   base_url: string | null
   reachable: boolean
+  stale: boolean
   total: number
   leased_total: number
   free_total: number
