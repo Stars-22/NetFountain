@@ -22,6 +22,7 @@ def test_config_import_and_load():
     assert p2.api_url == "http://www.zdopen.com/FreeProxy/Get/"
     assert p2.trade_no == "<你的app_id>" and p2.api_key == "<你的akey>"
     assert p2.dalu == 1 and p2.protocol_type == 0
+    assert p2.default_ttl == 120
     assert p2.pull_count == 100 and p2.pull_interval == 5.0
     assert p2.supports_ttl is False and p2.enabled is True
     # 第三个供应商（default_http）：拉取参数回退 global，独立 test_* 亦回退 global，软关闭

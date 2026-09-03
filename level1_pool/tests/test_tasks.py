@@ -126,6 +126,49 @@ async def test_pull_skips_when_only_ttl_smaller(make_ip):
     assert records[0].ttl == 100
 
 
+async def test_pull_default_ttl_applied_when_missing(make_ip):
+    """default_ttl：供应商未返回 ttl 的项填充默认值，已返回 ttl 的不覆盖。"""
+    provider = _FakeProvider([[make_ip(1, ttl=None), make_ip(2, ttl=30)]])
+    tester = _FakeTester(passed_count=2)
+    pool = Level1Pool(max_size=100)
+    stats = ServiceStats()
+    task = PullTask(
+        provider, tester, pool, stats, 10, 0.01, asyncio.Lock(),
+        default_ttl=120.0,
+    )
+    await _run_until_cancelled(task)
+    records = {r.ip: r for r in await pool.all()}
+    assert records["10.0.0.1"].ttl == 120.0
+    assert records["10.0.0.2"].ttl == 30.0
+
+
+async def test_pull_default_ttl_not_configured_keeps_none(make_ip):
+    """未配置 default_ttl → ttl 保持 None（永久）。"""
+    provider = _FakeProvider([[make_ip(1, ttl=None)]])
+    tester = _FakeTester(passed_count=1)
+    pool = Level1Pool(max_size=100)
+    stats = ServiceStats()
+    task = PullTask(provider, tester, pool, stats, 10, 0.01, asyncio.Lock())
+    await _run_until_cancelled(task)
+    records = await pool.all()
+    assert records[0].ttl is None
+
+
+async def test_pull_default_ttl_non_positive_ignored(make_ip):
+    """default_ttl <= 0 视为未配置。"""
+    provider = _FakeProvider([[make_ip(1, ttl=None)]])
+    tester = _FakeTester(passed_count=1)
+    pool = Level1Pool(max_size=100)
+    stats = ServiceStats()
+    task = PullTask(
+        provider, tester, pool, stats, 10, 0.01, asyncio.Lock(),
+        default_ttl=0,
+    )
+    await _run_until_cancelled(task)
+    records = await pool.all()
+    assert records[0].ttl is None
+
+
 async def test_pull_task_cancellation(make_ip):
     provider = _FakeProvider([[make_ip(1)]])
     tester = _FakeTester(passed_count=1)

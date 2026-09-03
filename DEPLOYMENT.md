@@ -160,6 +160,7 @@ providers:
     api_key: <你的akey>    # freeproxy：akey（密码 16 位 MD5）
     dalu: 1                # 区域选择（必选）：1=大陆，0=海外
     protocol_type: 0       # 协议筛选：0=不发送(全部)，1=http，2=socks4，3=socks5，4=https
+    default_ttl: 120       # 供应商未返回 ttl 时填充的默认秒数（省略=不启用，IP 视为永久）
     pull_count: 100        # 单次提取数量（接口上限 100）
     pull_interval: 5.0     # 提取间隔（接口要求至少 1 秒一次）
     supports_ttl: false    # 接口不返回过期时间
@@ -179,6 +180,8 @@ providers:
 
 - **凭据入库**：`level1_pool/config/level1_pool.yaml` 属运行期本地文件（已 gitignore），请从模板 `config/level1_pool.example.yaml` 复制并替换 `api_key` / `trade_no` 为**你自己的** 91HTTP / freeproxy 凭据，确保不入库、不泄露。
 - **每个供应商独立限频**：各拉取器使用独立 `pull_lock`，互不拖慢节奏；所有供应商拉取的 IP 经各自测试管线后进入同一个池（按 `proxy_url` 全局去重）。
+- **default_ttl（默认 TTL）**：供应商条目可配 `default_ttl`（秒）；供应商未返回 ttl 的 IP 拉取后统一填充该值（供应商返回了 ttl 则不覆盖）。到期后由 TTL 清扫移除，下次拉取重新入池。省略/`None` 不启用（IP 视为永久）。
+- **重复 IP 去重规则**：region 未变且 ttl 未延长（新 ≤ 旧，含双方均无 ttl）时跳过不更新（`duplicates` 累计，不触发二级池重测）；新拉取无 ttl 但池内有 ttl 时跳过（有限 ttl 不被覆盖为永久，等旧记录 TTL 到期清扫后下次拉取重新入池）；其余重复（region 变化、ttl 延长续期、永久升级为有限）删除旧记录并以新 id 重建刷新。
 - `provider.type`（即 `providers[].type`）当前支持三种：
   - `http91`：适配 91HTTP `/v1/get-ip` JSON 接口（携带 `expire_time` 折算 TTL）。
   - `freeproxy`：适配 zdopen `/FreeProxy/Get/` 提取接口（JSON，`code="10001"` 为成功；`trade_no`=app_id、`api_key`=akey；`dalu` 必选 1=大陆/0=海外，`protocol_type` 可选 0=全部/1=http/2=socks4/3=socks5/4=https；`adr` 映射地区，`level` 匿名度字段丢弃，不返回 TTL；业务错误码 12001/12002/12009 等仅记日志返回空）。

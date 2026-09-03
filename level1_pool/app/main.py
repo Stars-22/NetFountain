@@ -136,6 +136,7 @@ def create_app(
                             test_workers=rt.test_workers,
                             name=rt.name,
                             provider_stats=provider_stats[rt.name],
+                            default_ttl=rt.default_ttl,
                         ).run()
                     )
                 )

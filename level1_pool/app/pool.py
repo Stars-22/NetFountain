@@ -2,9 +2,10 @@
 
 - 容量淘汰由 ``deque(maxlen)`` 天然实现（满则弹出最旧），O(1)；
 - TTL 淘汰为周期性主动清扫，二者独立，容量兜底 + TTL 精细化；
-- 以 ``proxy_url``（ip+port+protocol）为去重键：重复入池时删除旧记录并以新 id
-  重建（刷新 ttl/region，记录移至尾部，新 id 触发二级池增量同步）；仅当
-  region 未变且新 ttl 严格小于旧 ttl（上次拉取返回值）时直接跳过不更新；
+- 以 ``proxy_url``（ip+port+protocol）为去重键：region 未变且 ttl 未延长
+  （新 <= 旧，含双方均无 ttl）时直接跳过不更新（新拉取无 ttl 时即使 region
+  变化也跳过，避免有限 ttl 被覆盖为永久）；其余重复删除旧记录并以新 id 重建
+  （刷新 ttl/region，记录移至尾部，新 id 触发二级池增量同步）；
 - 所有变更在 ``asyncio.Lock`` 下进行，保证并发安全；
 - ``id`` 全局自增、绝不复用，作为二级池增量同步的水位线依据。
 """
@@ -90,15 +91,34 @@ class Level1Pool:
 
     @property
     def duplicates(self) -> int:
-        """因 proxy_url 重复被跳过更新（仅 TTL 变小且 region 未变）的累计次数。"""
+        """因 proxy_url 重复被跳过更新（region 未变且 ttl 未延长，或新拉取无 ttl）的累计次数。"""
         return self._duplicates
+
+    @staticmethod
+    def _should_skip(old: IpRecord, ip: ProviderIp) -> bool:
+        """重复入池的跳过判定（规则见 ``add`` docstring）。
+
+        - 新拉取无 ttl 且旧记录有 ttl：跳过（有限 ttl 不被覆盖为永久，
+          无论 region 是否变化）；
+        - 双方均无 ttl 且 region 未变：跳过（零信息，避免同批重复 IP 每轮
+          重建 + 二级池重测）；
+        - region 未变且双方均有 ttl 且新 ttl <= 旧 ttl：跳过（ttl 未延长）；
+        - 其余（region 变化、ttl 严格延长续期、旧无 ttl 新有 ttl 升级）：重建。
+        """
+        if ip.ttl is None:
+            if old.ttl is not None:
+                return True
+            return ip.region == old.region
+        if old.ttl is None:
+            return False
+        return ip.region == old.region and ip.ttl <= old.ttl
 
     async def add(self, ip: ProviderIp, now: float) -> IpRecord | None:
         """按 ``proxy_url``（ip+port+protocol）去重入池。
 
-        - 重复且只有 TTL 变小（region 未变、双方 ttl 均非 None、新 ttl 严格
-          小于旧记录存储的 ttl）：直接跳过，不更新任何状态，返回 ``None``，
-          ``duplicates`` 累计；
+        - 重复且命中 ``_should_skip``（新无 ttl 不覆盖有 ttl；region 未变且
+          ttl 未延长，含双方均无 ttl）：直接跳过，不更新任何状态，返回
+          ``None``，``duplicates`` 累计；
         - 其余重复：删除旧记录并分配新 id 重建（刷新 ttl/region，移至尾部），
           新 id 会触发二级池增量同步；
         - 新记录：分配自增 id 入池；已满时弹出最旧记录（容量淘汰，同步清理去重索引）。
@@ -108,13 +128,7 @@ class Level1Pool:
             old_id = self._key_index.get(key)
             if old_id is not None:
                 old = self._records.get(old_id)
-                if (
-                    old is not None
-                    and old.ttl is not None
-                    and ip.ttl is not None
-                    and ip.region == old.region
-                    and ip.ttl < old.ttl
-                ):
+                if old is not None and self._should_skip(old, ip):
                     self._duplicates += 1
                     return None
                 self._key_index.pop(key, None)

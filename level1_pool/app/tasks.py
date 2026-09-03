@@ -3,6 +3,8 @@
 拉取与测试解耦：
 - ``pull_lock`` 只保护 ``provider.pull``（供应商限频点），不再把测试串在拉取链上；
 - 拉取按「tick 起点计时」调度，供应商响应快时恢复 ~``pull_interval`` 节奏；
+- ``default_ttl`` 归一化：供应商未返回 ttl（None）且配置了 ``default_ttl``（>0）
+  时，拉取后统一填充默认剩余秒数（供应商返回了 ttl 则不覆盖）；
 - 拉到的批次进入有界队列，由多个测试 worker（默认
   ``max(1, test_concurrency // pull_count)``）并发消费：每批内部 ``test_many``
   再按 ``test_concurrency`` 并发探测代理可达性（仍只测代理、不测出口），
@@ -19,6 +21,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 
 from .pool import Level1Pool, ServiceStats
 from .provider import BaseProvider
@@ -46,6 +49,7 @@ class PullTask:
         sleep_fn: SleepFn | None = None,
         name: str = "",
         provider_stats: ProviderStats | None = None,
+        default_ttl: float | None = None,
     ):
         self._provider = provider
         self._tester = tester
@@ -59,6 +63,7 @@ class PullTask:
         self._sleep = sleep_fn or asyncio.sleep
         self._name = name
         self._provider_stats = provider_stats
+        self._default_ttl = default_ttl if default_ttl and default_ttl > 0 else None
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
         self._drops = 0
 
@@ -87,6 +92,12 @@ class PullTask:
                 try:
                     async with self._pull_lock:
                         raw = await self._provider.pull(self._pull_count)
+                    if self._default_ttl is not None:
+                        # 供应商未返回 ttl 的项填充默认剩余秒数（已返回的不覆盖）
+                        raw = [
+                            ip if ip.ttl is not None else replace(ip, ttl=self._default_ttl)
+                            for ip in raw
+                        ]
                     self._stats.total_pulled += len(raw)
                     if self._provider_stats is not None:
                         self._provider_stats.total_pulled += len(raw)
