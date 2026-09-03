@@ -1,25 +1,43 @@
+# 一级池多供应商配置模板：global（供应商条目默认值）+ providers（供应商列表）。
+# 每个供应商条目深合并 global，条目字段优先；未写字段回退 global / 代码默认值。
+# 每个供应商独立拉取器（PullTask）+ 独立测试器（Tester），共享同一个池；
+# 条目内可独立配置 test_timeout / test_concurrency / test_buffer / test_workers。
+# service / pool / ttl_sweep_interval 为顶层共享配置。
+# 兼容旧格式：直接写顶层 provider: 单供应商块（test_* 用顶层字段）仍可运行。
 service:
   host: 0.0.0.0
   port: 8000
   log_level: INFO
 
-provider:
-  type: http91
-  api_url: http://api.91http.com/v1/get-ip
-  api_key: <你的密钥>
-  trade_no: <你的业务编号>
-  protocol: 1
-  pull_count: 10
-  pull_interval: 1.0
-  pull_timeout: 5.0
-  supports_ttl: true
-
 pool:
   max_size: 500
 
-test_timeout: 3.0
-test_concurrency: 10
-test_buffer: 20
-test_workers: 5  # 缺省自动 = max(1, test_concurrency//pull_count)
-
 ttl_sweep_interval: 5.0
+
+global:                      # 供应商条目默认值（可选）
+  pull_count: 10
+  pull_interval: 1.0
+  pull_timeout: 5.0
+  test_timeout: 3.0
+  test_concurrency: 10
+  test_buffer: 20
+  test_workers: 5            # 缺省自动 = max(1, test_concurrency//pull_count)
+
+providers:
+  - name: http91_main        # 供应商唯一名称（缺省自动 provider_N）
+    type: http91             # 供应商类型：http91 | default_http
+    api_url: http://api.91http.com/v1/get-ip
+    api_key: <你的密钥>       # 供应商密钥（91HTTP 为 secret）
+    trade_no: <你的业务编号>  # 供应商业务编号（91HTTP 专用）
+    protocol: 1              # 91HTTP：1=HTTP，2=SOCKS5
+    supports_ttl: true       # 供应商是否返回过期时间（91HTTP 支持）
+    test_timeout: 3.0        # —— 以下为本供应商独立测试管线配置 ——
+    test_concurrency: 50
+    test_buffer: 100
+    test_workers: 5
+    enabled: true            # false = 软关闭该拉取器（配置保留但不启动）
+  - name: backup_http        # 第二个供应商示例（default_http 通用格式）
+    type: default_http
+    api_url: http://provider.example.com/api
+    api_key: <你的密钥>
+    enabled: false

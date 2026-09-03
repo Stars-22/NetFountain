@@ -118,40 +118,58 @@ npm install
 
 ### 5.1 一级池 `level1_pool/config/level1_pool.yaml`
 
+一级池支持**一个配置文件配置多个供应商**：`global`（供应商条目默认值）+ `providers`（供应商列表），每个供应商条目深合并 global、条目字段优先；每个供应商独立拉取器（PullTask）+ 独立测试器（Tester），`test_timeout` / `test_concurrency` / `test_buffer` / `test_workers` 按供应商条目独立生效，共享同一个环形池与 TTL 清扫。兼容旧格式（顶层单 `provider:` 块 + 顶层 `test_*` 字段）。
+
 ```yaml
 service:
   host: 0.0.0.0            # 监听地址
   port: 8000               # 监听端口
   log_level: INFO
 
-provider:
-  type: http91             # 供应商类型：http91 | default_http
-  api_url: http://api.91http.com/v1/get-ip   # 供应商拉取地址
-  api_key: <你的密钥>        # 供应商密钥（91HTTP 为 secret）
-  trade_no: <你的业务编号>   # 供应商业务编号（91HTTP 专用）
-  protocol: 1              # 91HTTP：1=HTTP，2=SOCKS5
+pool:
+  max_size: 500            # 环形池容量上限（全部供应商共享）
+
+ttl_sweep_interval: 5.0    # TTL 过期清理周期（秒）
+
+global:                    # 供应商条目默认值（可选，条目未写字段回退这里）
   pull_count: 10           # 每次拉取数量
   pull_interval: 1.0       # 拉取间隔（秒）
   pull_timeout: 5.0        # 拉取超时（秒）
-  supports_ttl: true       # 供应商是否返回过期时间（91HTTP 支持）
+  test_timeout: 3.0        # 代理可达性测试超时（秒）
+  test_concurrency: 10     # 测试并发数
+  test_buffer: 20          # 待测批次有界队列容量（队满丢最旧批次，drops 累计）
+  test_workers: 5          # 测试 worker 数（缺省自动 max(1, test_concurrency//pull_count)）
 
-pool:
-  max_size: 500            # 环形池容量上限
-
-test_timeout: 3.0          # 代理可达性测试超时（秒）
-test_concurrency: 10       # 测试并发数
-test_buffer: 20            # 待测批次有界队列容量（队满丢最旧批次，drops 累计）
-test_workers: 5            # 测试 worker 数（缺省自动 max(1, test_concurrency//pull_count)）
-ttl_sweep_interval: 5.0    # TTL 过期清理周期（秒）
+providers:
+  - name: http91_main      # 供应商唯一名称（缺省自动 provider_N，/status 明细键）
+    type: http91           # 供应商类型：http91 | default_http
+    api_url: http://api.91http.com/v1/get-ip   # 供应商拉取地址
+    api_key: <你的密钥>     # 供应商密钥（91HTTP 为 secret）
+    trade_no: <你的业务编号> # 供应商业务编号（91HTTP 专用）
+    protocol: 1            # 91HTTP：1=HTTP，2=SOCKS5
+    supports_ttl: true     # 供应商是否返回过期时间（91HTTP 支持）
+    test_timeout: 3.0      # —— 以下为本供应商独立测试管线配置（可省略回退 global）——
+    test_concurrency: 50
+    test_buffer: 100
+    test_workers: 5
+    enabled: true          # false = 软关闭该拉取器（配置保留但不启动）
+  - name: backup_http      # 第二个供应商示例（default_http 通用格式）
+    type: default_http
+    api_url: http://provider.example.com/api
+    api_key: <你的密钥>
+    enabled: false
 ```
 
 要点：
 
 - **凭据入库**：`level1_pool/config/level1_pool.yaml` 属运行期本地文件（已 gitignore），请从模板 `config/level1_pool.example.yaml` 复制并替换 `api_key` / `trade_no` 为**你自己的** 91HTTP 凭据，确保不入库、不泄露。
-- `provider.type` 当前支持两种：
+- **每个供应商独立限频**：各拉取器使用独立 `pull_lock`，互不拖慢节奏；所有供应商拉取的 IP 经各自测试管线后进入同一个池（按 `proxy_url` 全局去重）。
+- `provider.type`（即 `providers[].type`）当前支持两种：
   - `http91`：适配 91HTTP `/v1/get-ip` JSON 接口（携带 `expire_time` 折算 TTL）。
   - `default_http`：通用 HTTP 供应商，GET `api_url`（携带 `api_key`），解析 `{data:[{ip,port,protocol,region,ttl}]}` 格式，用于自建/联调供应商。
-- 新增供应商只需在 `level1_pool/app/provider.py` 中「继承 `BaseProvider` + `@register("类型名")`」，无需改主流程。
+- 新增供应商只需在 `level1_pool/app/provider.py` 中「继承 `BaseProvider` + `@register("类型名")`」，随后在 `providers` 列表加一个条目即可，无需改主流程。
+- `/status` 的 `providers` 字段按供应商返回明细（`total_pulled` / `total_entered` / `pull_failures` / `test_failures` / `drops`），全局汇总字段含义不变（= 各供应商之和）。
+- 多供应商格式下环境变量覆盖（`LEVEL1_*`）不生效（与二级池多开格式一致）；旧格式仍支持环境变量覆盖。
 
 ### 5.2 二级池 `level2_pool/config/level2_pool.yaml`
 

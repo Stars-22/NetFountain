@@ -43,6 +43,19 @@ class ServiceStats:
     drops: int = 0
 
 
+@dataclass
+class ProviderStats:
+    """单个供应商运行统计（与 ServiceStats 对应子集，/status 按 providers 明细展示）。"""
+
+    name: str = ""
+    type: str = ""
+    total_pulled: int = 0
+    total_entered: int = 0
+    pull_failures: int = 0
+    test_failures: int = 0
+    drops: int = 0
+
+
 class Level1Pool:
     """一级池：dict 索引 + 循环队列 + 协议计数。"""
 

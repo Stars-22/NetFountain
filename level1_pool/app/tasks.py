@@ -9,6 +9,8 @@
   总并发不超过 ``test_concurrency``；
 - 队列满时丢弃最旧待测批次（有界内存，``drops`` 累计计数），被丢弃的 IP
   仍计入 ``total_pulled``；
+- 多供应商场景下每个供应商实例化一个 PullTask（独立 ``pull_lock`` 限频、独立
+  队列与测试 worker、独立 ``provider_stats`` 明细统计），共享同一个池；
 - 单 tick / 单批次异常仅记日志，循环继续；支持 asyncio 取消优雅退出。
 """
 from __future__ import annotations
@@ -28,7 +30,7 @@ SleepFn = Callable[[float], Awaitable[None]]
 
 
 class PullTask:
-    """供应商拉取 + 并发测试管线。"""
+    """供应商拉取 + 并发测试管线（每个供应商实例一个，互不干扰）。"""
 
     def __init__(
         self,
@@ -42,6 +44,8 @@ class PullTask:
         buffer_size: int = 20,
         test_workers: int | None = None,
         sleep_fn: SleepFn | None = None,
+        name: str = "",
+        provider_stats: ProviderStats | None = None,
     ):
         self._provider = provider
         self._tester = tester
@@ -53,6 +57,8 @@ class PullTask:
         self._buffer_size = buffer_size
         self._test_workers = test_workers
         self._sleep = sleep_fn or asyncio.sleep
+        self._name = name
+        self._provider_stats = provider_stats
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
         self._drops = 0
 
@@ -82,13 +88,17 @@ class PullTask:
                     async with self._pull_lock:
                         raw = await self._provider.pull(self._pull_count)
                     self._stats.total_pulled += len(raw)
+                    if self._provider_stats is not None:
+                        self._provider_stats.total_pulled += len(raw)
                     if raw:
                         self._enqueue(raw)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    logger.exception("pull tick failed")
+                    logger.exception("pull tick failed (provider=%s)", self._name or "-")
                     self._stats.pull_failures += 1
+                    if self._provider_stats is not None:
+                        self._provider_stats.pull_failures += 1
                 elapsed = time.monotonic() - start
                 await self._sleep(max(0.0, self._pull_interval - elapsed))
         finally:
@@ -105,11 +115,15 @@ class PullTask:
                 for ip in passed:
                     await self._pool.add(ip, time.time())
                 self._stats.total_entered += len(passed)
+                if self._provider_stats is not None:
+                    self._provider_stats.total_entered += len(passed)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("test batch failed")
+                logger.exception("test batch failed (provider=%s)", self._name or "-")
                 self._stats.test_failures += 1
+                if self._provider_stats is not None:
+                    self._provider_stats.test_failures += 1
             finally:
                 self._queue.task_done()
 
@@ -125,8 +139,11 @@ class PullTask:
                 return
             self._drops += 1
             self._stats.drops += 1
+            if self._provider_stats is not None:
+                self._provider_stats.drops += 1
             logger.warning(
-                "test queue full, dropped oldest pending batch (drops=%d)",
+                "test queue full, dropped oldest pending batch (provider=%s, drops=%d)",
+                self._name or "-",
                 self._drops,
             )
             try:

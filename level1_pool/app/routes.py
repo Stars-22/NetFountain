@@ -51,6 +51,18 @@ async def status(request: Request):
             },
             "api_call_count": getattr(request.app.state, "api_call_count", 0),
             "next_id": pool.next_id,
+            "providers": [
+                {
+                    "name": ps.name,
+                    "type": ps.type,
+                    "total_pulled": ps.total_pulled,
+                    "total_entered": ps.total_entered,
+                    "pull_failures": ps.pull_failures,
+                    "test_failures": ps.test_failures,
+                    "drops": ps.drops,
+                }
+                for ps in getattr(request.app.state, "provider_stats", {}).values()
+            ],
             "errors": {
                 "pull_failures": stats.pull_failures,
                 "test_failures": stats.test_failures,
