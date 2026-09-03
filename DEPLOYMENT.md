@@ -142,10 +142,10 @@ global:                    # 供应商条目默认值（可选，条目未写字
 
 providers:
   - name: http91_main      # 供应商唯一名称（缺省自动 provider_N，/status 明细键）
-    type: http91           # 供应商类型：http91 | default_http
+    type: http91           # 供应商类型：http91 | default_http | freeproxy
     api_url: http://api.91http.com/v1/get-ip   # 供应商拉取地址
-    api_key: <你的密钥>     # 供应商密钥（91HTTP 为 secret）
-    trade_no: <你的业务编号> # 供应商业务编号（91HTTP 专用）
+    api_key: <你的密钥>     # 供应商密钥（91HTTP 为 secret，freeproxy 为 akey）
+    trade_no: <你的业务编号> # 供应商业务编号（91HTTP / freeproxy 专用，freeproxy 为 app_id）
     protocol: 1            # 91HTTP：1=HTTP，2=SOCKS5
     supports_ttl: true     # 供应商是否返回过期时间（91HTTP 支持）
     test_timeout: 3.0      # —— 以下为本供应商独立测试管线配置（可省略回退 global）——
@@ -153,7 +153,22 @@ providers:
     test_buffer: 100
     test_workers: 5
     enabled: true          # false = 软关闭该拉取器（配置保留但不启动）
-  - name: backup_http      # 第二个供应商示例（default_http 通用格式）
+  - name: freeproxy_main   # 第二个供应商示例（freeproxy / zdopen 提取接口）
+    type: freeproxy
+    api_url: http://www.zdopen.com/FreeProxy/Get/
+    trade_no: <你的app_id> # freeproxy：app_id
+    api_key: <你的akey>    # freeproxy：akey（密码 16 位 MD5）
+    dalu: 1                # 区域选择（必选）：1=大陆，0=海外
+    protocol_type: 0       # 协议筛选：0=不发送(全部)，1=http，2=socks4，3=socks5，4=https
+    pull_count: 100        # 单次提取数量（接口上限 100）
+    pull_interval: 5.0     # 提取间隔（接口要求至少 1 秒一次）
+    supports_ttl: false    # 接口不返回过期时间
+    test_timeout: 3.0
+    test_concurrency: 50
+    test_buffer: 100
+    test_workers: 5
+    enabled: true
+  - name: backup_http      # 第三个供应商示例（default_http 通用格式）
     type: default_http
     api_url: http://provider.example.com/api
     api_key: <你的密钥>
@@ -162,10 +177,11 @@ providers:
 
 要点：
 
-- **凭据入库**：`level1_pool/config/level1_pool.yaml` 属运行期本地文件（已 gitignore），请从模板 `config/level1_pool.example.yaml` 复制并替换 `api_key` / `trade_no` 为**你自己的** 91HTTP 凭据，确保不入库、不泄露。
+- **凭据入库**：`level1_pool/config/level1_pool.yaml` 属运行期本地文件（已 gitignore），请从模板 `config/level1_pool.example.yaml` 复制并替换 `api_key` / `trade_no` 为**你自己的** 91HTTP / freeproxy 凭据，确保不入库、不泄露。
 - **每个供应商独立限频**：各拉取器使用独立 `pull_lock`，互不拖慢节奏；所有供应商拉取的 IP 经各自测试管线后进入同一个池（按 `proxy_url` 全局去重）。
-- `provider.type`（即 `providers[].type`）当前支持两种：
+- `provider.type`（即 `providers[].type`）当前支持三种：
   - `http91`：适配 91HTTP `/v1/get-ip` JSON 接口（携带 `expire_time` 折算 TTL）。
+  - `freeproxy`：适配 zdopen `/FreeProxy/Get/` 提取接口（JSON，`code="10001"` 为成功；`trade_no`=app_id、`api_key`=akey；`dalu` 必选 1=大陆/0=海外，`protocol_type` 可选 0=全部/1=http/2=socks4/3=socks5/4=https；`adr` 映射地区，`level` 匿名度字段丢弃，不返回 TTL；业务错误码 12001/12002/12009 等仅记日志返回空）。
   - `default_http`：通用 HTTP 供应商，GET `api_url`（携带 `api_key`），解析 `{data:[{ip,port,protocol,region,ttl}]}` 格式，用于自建/联调供应商。
 - 新增供应商只需在 `level1_pool/app/provider.py` 中「继承 `BaseProvider` + `@register("类型名")`」，随后在 `providers` 列表加一个条目即可，无需改主流程。
 - `/status` 的 `providers` 字段按供应商返回明细（`total_pulled` / `total_entered` / `pull_failures` / `test_failures` / `drops`），全局汇总字段含义不变（= 各供应商之和）。

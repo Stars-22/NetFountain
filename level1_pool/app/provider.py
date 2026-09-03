@@ -1,4 +1,5 @@
-"""供应商客户端：BaseProvider 抽象 + DefaultHttpProvider + ProviderFactory。
+"""供应商客户端：BaseProvider 抽象 + DefaultHttpProvider + Http91Provider
++ FreeProxyProvider + ProviderFactory。
 
 本阶段统一假设的供应商响应格式（写入注释供各测试桩/联调沿用）：
 
@@ -32,6 +33,16 @@ from ip_pool_common.models import Protocol, ProviderIp
 from .config import ProviderConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_protocol(value: Any) -> Protocol:
+    """将供应商协议字符串归一化为 Protocol 枚举；未知/缺失值回退 HTTP。"""
+    if value is None:
+        return Protocol.HTTP
+    try:
+        return Protocol(str(value).strip().lower())
+    except ValueError:
+        return Protocol.HTTP
 
 
 class BaseProvider(ABC):
@@ -140,7 +151,7 @@ class DefaultHttpProvider(BaseProvider):
             port = int(item.get("port"))
         except (TypeError, ValueError):
             return None
-        protocol = self._coerce_protocol(item.get("protocol"))
+        protocol = _coerce_protocol(item.get("protocol"))
         region = item.get("region")
         ttl: float | None = None
         if item.get("ttl") is not None:
@@ -155,15 +166,6 @@ class DefaultHttpProvider(BaseProvider):
             region=region if isinstance(region, str) and region.strip() else None,
             ttl=ttl,
         )
-
-    @staticmethod
-    def _coerce_protocol(value: Any) -> Protocol:
-        if value is None:
-            return Protocol.HTTP
-        try:
-            return Protocol(str(value).strip().lower())
-        except ValueError:
-            return Protocol.HTTP
 
 
 @register("http91")
@@ -285,3 +287,109 @@ class Http91Provider(BaseProvider):
         except (TypeError, ValueError):
             return None
         return max(ts - now, 0.0)
+
+
+@register("freeproxy")
+class FreeProxyProvider(BaseProvider):
+    """FreeProxy（zdopen）供应商：GET /FreeProxy/Get/（JSON 提取接口）。
+
+    响应结构（与接口文档及实测一致，``code`` 为字符串）：
+
+        {
+          "code": "10001",
+          "msg": "获取成功",
+          "data": {
+            "count": 5,
+            "proxy_list": [
+              {"ip": "203.25.208.163", "port": 1100, "adr": "广东省 电信",
+               "protocol": "socks5", "level": "高匿"}
+            ]
+          }
+        }
+
+    - ``app_id`` / ``akey`` 分别来自 ``cfg.trade_no`` / ``cfg.api_key``；
+    - ``dalu``（必选：1=大陆，0=海外）与 ``protocol_type``（可选过滤，0=不发送）
+      来自配置；``return_type=3`` 固定 JSON 格式；
+    - 成功编号为 ``"10001"``（字符串），其余（12001 akey 错误、12002 频率过快、
+      12009 无代理等）仅记日志并返回空列表；
+    - ``protocol`` 直接映射 Protocol 枚举（http/socks4/socks5/https），
+      ``adr`` 映射 region；``level``（匿名度）无对应字段，丢弃；
+      不返回过期时间，``ttl`` 恒为 None；
+    - 网络/超时/HTTP/解析异常抛出。
+    """
+
+    MAX_COUNT = 100  # 接口限制：单次提取数量最大 100
+
+    def _params(self, count: int) -> dict[str, str]:
+        params = {
+            "app_id": self.cfg.trade_no,
+            "akey": self.cfg.api_key,
+            "count": str(min(count, self.MAX_COUNT)),
+            "dalu": str(self.cfg.dalu),
+            "return_type": "3",
+        }
+        if self.cfg.protocol_type > 0:
+            params["protocol_type"] = str(self.cfg.protocol_type)
+        return params
+
+    async def pull(self, count: int) -> list[ProviderIp]:
+        timeout = aiohttp.ClientTimeout(total=self.cfg.pull_timeout)
+        try:
+            async with self.session.get(
+                self.cfg.api_url, params=self._params(count), timeout=timeout
+            ) as resp:
+                resp.raise_for_status()
+                payload = await resp.json(content_type=None)
+            return self._parse(payload, count)
+        except asyncio.CancelledError:
+            raise
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            ValueError,
+            TypeError,
+            OSError,
+        ) as exc:
+            logger.warning("pull from %r failed: %s", self.cfg.api_url, exc)
+            raise
+
+    def _parse(self, payload: Any, count: int) -> list[ProviderIp]:
+        if not isinstance(payload, dict):
+            logger.warning("provider payload is not an object: %r", type(payload).__name__)
+            return []
+        code = payload.get("code")
+        if str(code).strip() != "10001":
+            logger.warning("provider error: code=%r msg=%r", code, payload.get("msg"))
+            return []
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            logger.warning("provider payload missing 'data' object")
+            return []
+        proxy_list = data.get("proxy_list")
+        if not isinstance(proxy_list, list):
+            logger.warning("provider payload missing 'data.proxy_list' list")
+            return []
+        out: list[ProviderIp] = []
+        for item in proxy_list[:count]:
+            parsed = self._parse_item(item)
+            if parsed is not None:
+                out.append(parsed)
+        return out
+
+    def _parse_item(self, item: Any) -> ProviderIp | None:
+        if not isinstance(item, dict):
+            return None
+        ip = item.get("ip")
+        if not isinstance(ip, str) or not ip.strip():
+            return None
+        try:
+            port = int(item.get("port"))
+        except (TypeError, ValueError):
+            return None
+        region = item.get("adr")
+        return ProviderIp(
+            ip=ip,
+            port=port,
+            protocol=_coerce_protocol(item.get("protocol")),
+            region=region if isinstance(region, str) and region.strip() else None,
+        )

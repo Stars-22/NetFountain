@@ -128,6 +128,54 @@ def http91_request_url():
 
 
 # ---------------------------------------------------------------------------
+# freeproxy 供应商桩：URL / 配置 / 请求 URL 构造
+# ---------------------------------------------------------------------------
+FREEPROXY_API_URL = "http://www.zdopen.com/FreeProxy/Get/"
+FREEPROXY_APP_ID = "202608211839203977"
+FREEPROXY_AKEY = "9fdd09efee3b49d8"
+
+
+@pytest.fixture
+def freeproxy_cfg():
+    """指向 freeproxy 打桩 URL 的供应商配置。"""
+    return ProviderConfig(
+        type="freeproxy",
+        api_url=FREEPROXY_API_URL,
+        api_key=FREEPROXY_AKEY,
+        trade_no=FREEPROXY_APP_ID,
+        dalu=1,
+        protocol_type=0,
+        pull_count=10,
+        pull_interval=1.0,
+        pull_timeout=5.0,
+        supports_ttl=False,
+    )
+
+
+@pytest.fixture
+def freeproxy_request_url():
+    """构造 freeproxy 实际请求 URL（含 query 参数），供 aioresponses 打桩精确匹配。"""
+
+    def _make(
+        count: int = 10,
+        app_id: str = FREEPROXY_APP_ID,
+        akey: str = FREEPROXY_AKEY,
+        dalu: int = 1,
+        protocol_type: int = 0,
+        api_url: str = FREEPROXY_API_URL,
+    ) -> str:
+        qs = (
+            f"app_id={app_id}&akey={akey}&count={min(count, 100)}"
+            f"&dalu={dalu}&return_type=3"
+        )
+        if protocol_type > 0:
+            qs += f"&protocol_type={protocol_type}"
+        return f"{api_url}?{qs}"
+
+    return _make
+
+
+# ---------------------------------------------------------------------------
 # 网络桩
 # ---------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@ import pytest
 from app.provider import (
     BaseProvider,
     DefaultHttpProvider,
+    FreeProxyProvider,
     Http91Provider,
     ProviderFactory,
     register,
@@ -426,3 +427,204 @@ def test_http91_parse_numeric_expire_time(http91_cfg):
     )
     assert len(ips) == 1
     assert ips[0].ttl == 1800.0
+
+
+# ---------------------------------------------------------------------------
+# freeproxy（zdopen）
+# ---------------------------------------------------------------------------
+
+
+def _freeproxy_payload(items: list[dict], code: str = "10001", msg: str = "获取成功") -> dict:
+    return {
+        "code": code,
+        "msg": msg,
+        "data": {"count": len(items), "proxy_list": items},
+    }
+
+
+async def test_factory_creates_freeproxy(mock_session, freeproxy_cfg):
+    session, _ = mock_session
+    prov = ProviderFactory.create("freeproxy", freeproxy_cfg, session)
+    assert isinstance(prov, FreeProxyProvider)
+    assert prov.name == "freeproxy"
+
+
+async def test_freeproxy_pull_parses_items(
+    mock_session, freeproxy_cfg, freeproxy_request_url
+):
+    session, m = mock_session
+    m.get(
+        freeproxy_request_url(),
+        status=200,
+        payload=_freeproxy_payload(
+            [
+                {"ip": "203.25.208.163", "port": 1100, "adr": "广东省 电信",
+                 "protocol": "socks5", "level": "高匿"},
+                {"ip": "111.79.111.126", "port": "3128", "adr": "江西省抚州市 电信",
+                 "protocol": "http", "level": "未知"},
+                {"ip": "120.26.104.146", "port": 9098,
+                 "protocol": "https", "level": "高匿"},
+                {"ip": "1.2.3.4", "port": 7000, "adr": "   ", "protocol": "socks4"},
+            ]
+        ),
+    )
+    provider = FreeProxyProvider(freeproxy_cfg, session)
+    ips = await provider.pull(10)
+    assert len(ips) == 4
+    assert ips[0].ip == "203.25.208.163"
+    assert ips[0].port == 1100
+    assert ips[0].protocol == Protocol.SOCKS5
+    assert ips[0].region == "广东省 电信"
+    assert ips[0].ttl is None
+    assert ips[1].port == 3128
+    assert ips[1].protocol == Protocol.HTTP
+    assert ips[2].protocol == Protocol.HTTPS
+    assert ips[2].region is None
+    assert ips[3].protocol == Protocol.SOCKS4
+    assert ips[3].region is None
+
+
+async def test_freeproxy_pull_protocol_type_in_url(
+    mock_session, freeproxy_cfg, freeproxy_request_url
+):
+    session, m = mock_session
+    freeproxy_cfg.protocol_type = 2
+    m.get(
+        freeproxy_request_url(protocol_type=2),
+        status=200,
+        payload=_freeproxy_payload(
+            [{"ip": "1.2.3.4", "port": 1080, "protocol": "socks4"}]
+        ),
+    )
+    provider = FreeProxyProvider(freeproxy_cfg, session)
+    ips = await provider.pull(10)
+    assert len(ips) == 1
+    assert ips[0].protocol == Protocol.SOCKS4
+
+
+def test_freeproxy_params_defaults(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    params = provider._params(10)
+    assert params["app_id"] == freeproxy_cfg.trade_no
+    assert params["akey"] == freeproxy_cfg.api_key
+    assert params["count"] == "10"
+    assert params["dalu"] == "1"
+    assert params["return_type"] == "3"
+    assert "protocol_type" not in params
+
+
+def test_freeproxy_params_clamp_count_to_100(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    assert provider._params(200)["count"] == "100"
+
+
+def test_freeproxy_params_include_protocol_type_when_positive(freeproxy_cfg):
+    freeproxy_cfg.protocol_type = 3
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    assert provider._params(10)["protocol_type"] == "3"
+
+
+def test_freeproxy_parse_code_non_10001_returns_empty(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    payload = {"code": "12009", "msg": "该参数条件下当前没有任何代理IP"}
+    assert provider._parse(payload, 10) == []
+
+
+def test_freeproxy_parse_numeric_code_10001_ok(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    payload = {"code": 10001, "msg": "获取成功",
+               "data": {"proxy_list": [{"ip": "1.2.3.4", "port": 8080}]}}
+    ips = provider._parse(payload, 10)
+    assert len(ips) == 1
+    assert ips[0].ip == "1.2.3.4"
+
+
+def test_freeproxy_parse_respects_count_limit(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    items = [{"ip": f"1.1.1.{i}", "port": 8000 + i} for i in range(1, 16)]
+    ips = provider._parse(_freeproxy_payload(items), 5)
+    assert len(ips) == 5
+
+
+def test_freeproxy_parse_skips_malformed_items(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    ips = provider._parse(
+        _freeproxy_payload(
+            [
+                {"ip": "1.2.3.4"},                      # 缺端口
+                {"port": 8080},                         # 缺 ip
+                {"ip": "   ", "port": 1},               # ip 空白
+                {"ip": "1.2.3.5", "port": "not-a-port"},  # 非法端口
+                42,                                     # 非 dict
+                {"ip": "1.2.3.6", "port": 8082},
+            ]
+        ),
+        10,
+    )
+    assert len(ips) == 1
+    assert ips[0].ip == "1.2.3.6"
+
+
+def test_freeproxy_parse_invalid_protocol_defaults_http(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    ips = provider._parse(
+        _freeproxy_payload([{"ip": "1.2.3.4", "port": 8080, "protocol": "weird"}]),
+        10,
+    )
+    assert len(ips) == 1
+    assert ips[0].protocol == Protocol.HTTP
+
+
+async def test_freeproxy_pull_500_raises(
+    mock_session, freeproxy_cfg, freeproxy_request_url
+):
+    session, m = mock_session
+    m.get(freeproxy_request_url(), status=500, body=b"boom")
+    provider = FreeProxyProvider(freeproxy_cfg, session)
+    with pytest.raises(aiohttp.ClientResponseError):
+        await provider.pull(10)
+
+
+async def test_freeproxy_pull_timeout_raises(
+    mock_session, freeproxy_cfg, freeproxy_request_url
+):
+    session, m = mock_session
+    m.get(freeproxy_request_url(), exception=asyncio.TimeoutError())
+    provider = FreeProxyProvider(freeproxy_cfg, session)
+    with pytest.raises(asyncio.TimeoutError):
+        await provider.pull(10)
+
+
+async def test_freeproxy_pull_connection_error_raises(
+    mock_session, freeproxy_cfg, freeproxy_request_url
+):
+    session, m = mock_session
+    m.get(freeproxy_request_url(), exception=aiohttp.ClientConnectionError("refused"))
+    provider = FreeProxyProvider(freeproxy_cfg, session)
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await provider.pull(10)
+
+
+async def test_freeproxy_pull_cancelled_rethrows(
+    mock_session, freeproxy_cfg, freeproxy_request_url
+):
+    session, m = mock_session
+    m.get(freeproxy_request_url(), exception=asyncio.CancelledError())
+    provider = FreeProxyProvider(freeproxy_cfg, session)
+    with pytest.raises(asyncio.CancelledError):
+        await provider.pull(10)
+
+
+def test_freeproxy_parse_non_object_payload(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    assert provider._parse([], 10) == []
+
+
+def test_freeproxy_parse_data_not_object(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    assert provider._parse({"code": "10001", "data": "oops"}, 10) == []
+
+
+def test_freeproxy_parse_missing_proxy_list(freeproxy_cfg):
+    provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
+    assert provider._parse({"code": "10001", "data": {"count": 0}}, 10) == []

@@ -37,6 +37,8 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     trade_no: str = ""
     protocol: int = 1
+    dalu: int = 1  # freeproxy 专用：区域选择，1=大陆，0=海外（必选参数）
+    protocol_type: int = 0  # freeproxy 专用：0=不发送(全部)，1=http，2=socks4，3=socks5，4=https
     pull_count: int = 10
     pull_interval: float = 1.0
     pull_timeout: float = 5.0
