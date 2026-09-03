@@ -100,6 +100,7 @@ export interface HistoryPoint {
   ts: number
   pool_capacity: number | null
   available_count: number | null
+  leased_count: number | null
   avg_latency: number | null
   pull_rate: number
   pass_rate: number | null

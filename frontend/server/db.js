@@ -136,7 +136,7 @@ const historyStmt = db.prepare(`
     SELECT
       site,
       CAST(ts / ? AS INTEGER) * ? AS bucket,
-      pool_capacity, available_count, avg_latency,
+      pool_capacity, available_count, leased_count, avg_latency,
       total_pulled, total_entered, total_duplicates,
       pull_failures, test_failures, sync_failures, revalidate_failures,
       ttl_sweep_failures, empty_acquires, drops,
@@ -158,6 +158,7 @@ const historyStmt = db.prepare(`
     bucket,
     AVG(pool_capacity)   AS pool_capacity,
     AVG(available_count) AS available_count,
+    AVG(leased_count)    AS leased_count,
     AVG(avg_latency)     AS avg_latency,
     SUM(CASE WHEN prev_pulled IS NULL THEN 0
              WHEN total_pulled < prev_pulled THEN total_pulled
@@ -206,6 +207,7 @@ export function queryHistory(bucketSec, sinceTs) {
       ts: row.bucket,
       pool_capacity: row.pool_capacity,
       available_count: row.available_count,
+      leased_count: row.leased_count,
       avg_latency: row.avg_latency,
       pull_rate: pulled > 0 ? pulled / bucketSec : 0,
       pass_rate: pulled > 0 ? entered / pulled : null,

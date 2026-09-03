@@ -133,6 +133,34 @@ const poolCountOption = computed(() =>
   ),
 )
 
+const freeCountOption = computed(() =>
+  lineChart(
+    pointsOf(seriesKey.value).map((p) => fmtTime(p.ts, range.value)),
+    [
+      {
+        name: '可用 IP 数量',
+        data: pointsOf(seriesKey.value).map((p) => p.available_count),
+        color: PALETTE[1],
+      },
+    ],
+    { yName: '数量' },
+  ),
+)
+
+const leasedCountOption = computed(() =>
+  lineChart(
+    pointsOf(seriesKey.value).map((p) => fmtTime(p.ts, range.value)),
+    [
+      {
+        name: '已租 IP 数量',
+        data: pointsOf(seriesKey.value).map((p) => p.leased_count),
+        color: PALETTE[3],
+      },
+    ],
+    { yName: '数量' },
+  ),
+)
+
 const passRateOption = computed(() =>
   lineChart(
     pointsOf(seriesKey.value).map((p) => fmtTime(p.ts, range.value)),
@@ -209,6 +237,8 @@ const level1Charts = computed(() => [
 
 const siteCharts = computed(() => [
   { title: '历史池内 IP 数量', option: poolCountOption.value },
+  { title: '历史可用 IP 数', option: freeCountOption.value },
+  { title: '历史已租 IP 数', option: leasedCountOption.value },
   { title: '池内 IP 剩余时间分布', option: ttlOption.value },
   { title: '延迟分布', option: latencyDistOption.value },
   { title: '历史平均延迟', option: latencyHistOption.value },
