@@ -177,6 +177,11 @@ function ttlDistribution(ips, now) {
   let noTtl = 0
   if (Array.isArray(ips)) {
     for (const ip of ips) {
+      // num(null) 会得到 0（Number(null)===0），永久/无TTL 必须先显式判空
+      if (ip.ttl == null) {
+        noTtl += 1
+        continue
+      }
       const ttl = num(ip.ttl)
       if (ttl === null) {
         noTtl += 1
@@ -271,7 +276,7 @@ function allLevel2Ips() {
         region: ip.region || null,
         latency_ms: num(ip.latency_ms),
         leased: !!ip.leased,
-        ttl: num(ip.ttl),
+        ttl: ip.ttl == null ? null : num(ip.ttl),  // num(null)===0，永久项需保留 null
         created_at: num(ip.created_at),
       })
     }
