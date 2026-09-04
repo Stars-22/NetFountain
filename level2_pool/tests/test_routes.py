@@ -1,6 +1,7 @@
-"""routes.py + main.py 测试：7 端点契约 / 空池错误码 / 不存在 id / 计数递增。
+"""routes.py + main.py 测试：7+1 端点契约 / 空池错误码 / 不存在 id / 计数递增 /
+acquire 提取策略与筛选参数 / acquire-batch 批量提取。
 
-覆盖测试计划书 L2-RT-001 ~ 010。
+覆盖测试计划书 L2-RT-001 ~ 010 及提取策略扩展用例。
 """
 from __future__ import annotations
 
@@ -282,3 +283,206 @@ def test_create_app_loads_config_when_present(monkeypatch):
     assert app.state.settings.sync.interval == 3.0
     assert app.state.settings.test.latency_threshold_ms == 2000
     assert app.state.settings.revalidate_interval == 60.0
+
+
+# ---------------------------------------------------------------------------
+# acquire 提取策略 / 筛选参数
+# ---------------------------------------------------------------------------
+
+
+async def _seed_with_latencies(pool, make_l2, make_ip, latencies, ttl=3600.0):
+    now = time.time()
+    for i, lat in enumerate(latencies, start=1):
+        await pool.upsert(
+            make_l2(make_ip(i, ttl=ttl), latency=float(lat), created_at=now)
+        )
+
+
+async def test_acquire_strategy_latency_asc_via_api(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_with_latencies(pool, make_l2, make_ip, [300, 100, 200])
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire?strategy=latency_asc")
+    assert resp.json()["code"] == 0
+    assert resp.json()["data"]["ip"] == "10.0.0.2"
+    assert resp.json()["data"]["leased"] is True
+
+
+async def test_acquire_strategy_remaining_desc_via_api(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    now = time.time()
+    await pool.upsert(make_l2(make_ip(1, ttl=100.0), created_at=now))
+    await pool.upsert(make_l2(make_ip(2, ttl=None), created_at=now))
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire?strategy=remaining_desc")
+    assert resp.json()["data"]["ip"] == "10.0.0.2"  # ttl=None → 剩余时间无穷大
+
+
+async def test_acquire_default_params_unchanged(running_app, make_l2, make_ip):
+    """不带参数 = 旧行为：最新优先、不筛选。"""
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=3, leased_every=99)
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire")
+    assert resp.json()["data"]["id"] == 2  # 最新入池的 10.0.0.3
+
+
+async def test_acquire_filter_max_latency_ms_via_api(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=3, leased_every=99)  # 延迟 100/200/300
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire?max_latency_ms=250")
+    assert resp.json()["data"]["ip"] == "10.0.0.2"  # 最新且延迟达标者
+
+
+async def test_acquire_filter_excludes_all_returns_emptypool(
+    running_app, make_l2, make_ip
+):
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=2, leased_every=99)
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire?max_latency_ms=50")
+    assert resp.json()["code"] == 40402
+    assert app.state.stats.empty_acquires == 1
+    assert pool.stats().leased_total == 0
+
+
+async def test_acquire_filter_min_remaining_sec_via_api(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_with_latencies(pool, make_l2, make_ip, [100, 200], ttl=3600.0)
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        ok_resp = await client.post("/api/v1/ips/acquire?min_remaining_sec=60")
+        assert ok_resp.json()["code"] == 0
+        empty_resp = await client.post("/api/v1/ips/acquire?min_remaining_sec=7200")
+    assert empty_resp.json()["code"] == 40402
+
+
+async def test_acquire_invalid_strategy_returns_param_error(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=1, leased_every=99)
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire?strategy=fastest")
+    body = resp.json()
+    assert body["code"] == 40000
+    assert "strategy" in body["msg"]
+    assert body["data"] is None
+    assert pool.stats().leased_total == 0
+
+
+async def test_acquire_invalid_numeric_filters_return_param_error(running_app):
+    app = _make_app()
+    async with running_app(app) as client:
+        r1 = await client.post("/api/v1/ips/acquire?max_latency_ms=abc")
+        r2 = await client.post("/api/v1/ips/acquire?min_remaining_sec=-5")
+        r3 = await client.post("/api/v1/ips/acquire?max_latency_ms=nan")
+    assert all(r.json()["code"] == 40000 for r in (r1, r2, r3))
+
+
+# ---------------------------------------------------------------------------
+# acquire-batch 批量提取
+# ---------------------------------------------------------------------------
+
+
+async def test_acquire_batch_latest_order_via_api(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=3, leased_every=99)
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire-batch?count=2")
+    body = resp.json()
+    assert body["code"] == 0
+    assert [rec["ip"] for rec in body["data"]] == ["10.0.0.3", "10.0.0.2"]
+    assert all(rec["leased"] for rec in body["data"])
+    assert pool.stats().leased_total == 2
+
+
+async def test_acquire_batch_latency_asc_via_api(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_with_latencies(pool, make_l2, make_ip, [300, 100, 200])
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post(
+            "/api/v1/ips/acquire-batch?count=2&strategy=latency_asc"
+        )
+    assert [rec["ip"] for rec in resp.json()["data"]] == ["10.0.0.2", "10.0.0.3"]
+    latencies = [rec["latency_ms"] for rec in resp.json()["data"]]
+    assert latencies == sorted(latencies)
+
+
+async def test_acquire_batch_partial_returns_available(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=2, leased_every=99)
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire-batch?count=10")
+    body = resp.json()
+    assert body["code"] == 0
+    assert len(body["data"]) == 2
+
+
+async def test_acquire_batch_empty_returns_emptypool(running_app):
+    app = _make_app()
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire-batch?count=3")
+    body = resp.json()
+    assert body["code"] == 40402
+    assert body["data"] is None
+    assert app.state.stats.empty_acquires == 1
+
+
+async def test_acquire_batch_all_leased_returns_emptypool(
+    running_app, make_l2, make_ip
+):
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=2, leased_every=1)
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire-batch?count=2")
+    assert resp.json()["code"] == 40402
+
+
+async def test_acquire_batch_missing_count_returns_param_error(running_app):
+    app = _make_app()
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire-batch")
+    body = resp.json()
+    assert body["code"] == 40000
+    assert "count" in body["msg"]
+
+
+async def test_acquire_batch_invalid_count_returns_param_error(running_app):
+    app = _make_app()
+    async with running_app(app) as client:
+        r0 = await client.post("/api/v1/ips/acquire-batch?count=0")
+        r_neg = await client.post("/api/v1/ips/acquire-batch?count=-1")
+        r_float = await client.post("/api/v1/ips/acquire-batch?count=1.5")
+        r_text = await client.post("/api/v1/ips/acquire-batch?count=abc")
+    assert all(r.json()["code"] == 40000 for r in (r0, r_neg, r_float, r_text))
+
+
+async def test_acquire_batch_invalid_strategy_returns_param_error(running_app):
+    app = _make_app()
+    async with running_app(app) as client:
+        resp = await client.post("/api/v1/ips/acquire-batch?count=1&strategy=xxx")
+    assert resp.json()["code"] == 40000
+
+
+async def test_acquire_batch_with_filters_via_api(running_app, make_l2, make_ip):
+    pool = Level2Pool()
+    await _seed_pool(pool, make_l2, make_ip, n=4, leased_every=99)  # 延迟 100..400
+    app = _make_app(pool)
+    async with running_app(app) as client:
+        resp = await client.post(
+            "/api/v1/ips/acquire-batch?count=10&max_latency_ms=250"
+        )
+    body = resp.json()
+    assert body["code"] == 0
+    assert [rec["ip"] for rec in body["data"]] == ["10.0.0.2", "10.0.0.1"]
+    assert pool.stats().leased_total == 2

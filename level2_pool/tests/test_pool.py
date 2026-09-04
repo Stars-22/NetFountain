@@ -1,6 +1,7 @@
-"""pool.py 测试：upsert 去重 / 本地 id / 租赁语义 / 原子分配 / 计数 / TTL 淘汰。
+"""pool.py 测试：upsert 去重 / 本地 id / 租赁语义 / 原子分配 / 计数 / TTL 淘汰 /
+提取策略与筛选 / 批量提取。
 
-覆盖测试计划书 L2-POOL-001 ~ 013。
+覆盖测试计划书 L2-POOL-001 ~ 013 及提取策略扩展用例。
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import time
 
 import pytest
 
+from app.pool import AcquireStrategy
 from ip_pool_common.models import Level2Record, Protocol
 
 
@@ -274,3 +276,220 @@ async def test_next_id_never_reused_after_remove(pool, make_l2, make_ip):
     assert pool.next_id == 2
     third = await pool.upsert(_l2(make_l2, make_ip, 3))
     assert third.id == 2
+
+
+# ---------------------------------------------------------------------------
+# 提取策略（单条提取：不排序，直接 argmin/argmax）
+# ---------------------------------------------------------------------------
+
+
+async def test_acquire_default_and_explicit_latest(pool, make_l2, make_ip):
+    """默认与显式 latest 均为最新优先（旧行为回归）。"""
+    for i in range(1, 4):
+        await pool.upsert(_l2(make_l2, make_ip, i))
+    r1 = await pool.acquire()
+    r2 = await pool.acquire(AcquireStrategy.LATEST)
+    r3 = await pool.acquire("latest")
+    assert [r.ip for r in (r1, r2, r3)] == ["10.0.0.3", "10.0.0.2", "10.0.0.1"]
+
+
+async def test_acquire_strategy_latency_asc(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1, latency=300.0))
+    await pool.upsert(_l2(make_l2, make_ip, 2, latency=100.0))
+    await pool.upsert(_l2(make_l2, make_ip, 3, latency=200.0))
+    rec = await pool.acquire(AcquireStrategy.LATENCY_ASC)
+    assert rec.ip == "10.0.0.2"
+    assert rec.leased is True
+    second = await pool.acquire(AcquireStrategy.LATENCY_ASC)
+    assert second.ip == "10.0.0.3"
+
+
+async def test_acquire_latency_tie_takes_first_inserted(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1, latency=100.0))
+    await pool.upsert(_l2(make_l2, make_ip, 2, latency=100.0))
+    rec = await pool.acquire(AcquireStrategy.LATENCY_ASC)
+    assert rec.ip == "10.0.0.1"
+
+
+async def test_acquire_strategy_remaining_desc(pool, make_l2, make_ip):
+    # 剩余时间 = created_at + ttl - now（now=1000）：-50 / 100 / 900
+    await pool.upsert(make_l2(make_ip(1, ttl=50.0), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(2, ttl=100.0), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(3, ttl=1000.0), created_at=1000.0))
+    rec = await pool.acquire(AcquireStrategy.REMAINING_DESC, now=1000.0)
+    assert rec.ip == "10.0.0.3"
+    second = await pool.acquire(AcquireStrategy.REMAINING_DESC, now=1000.0)
+    assert second.ip == "10.0.0.2"
+
+
+async def test_acquire_remaining_tie_takes_first_inserted(pool, make_l2, make_ip):
+    await pool.upsert(make_l2(make_ip(1, ttl=100.0), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(2, ttl=100.0), created_at=1000.0))
+    rec = await pool.acquire(AcquireStrategy.REMAINING_DESC, now=1000.0)
+    assert rec.ip == "10.0.0.1"
+
+
+async def test_acquire_remaining_desc_ttl_none_is_infinity(pool, make_l2, make_ip):
+    """ttl=None 永不过期 → 剩余时间无穷大，排序最优先。"""
+    await pool.upsert(make_l2(make_ip(1, ttl=1e9), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(2, ttl=None), created_at=1000.0))
+    rec = await pool.acquire(AcquireStrategy.REMAINING_DESC, now=1000.0)
+    assert rec.ip == "10.0.0.2"
+
+
+async def test_acquire_strategy_random_leases_unique(pool, make_l2, make_ip):
+    for i in range(1, 6):
+        await pool.upsert(_l2(make_l2, make_ip, i))
+    got = []
+    for _ in range(5):
+        rec = await pool.acquire(AcquireStrategy.RANDOM)
+        assert rec is not None and rec.leased is True
+        got.append(rec.ip)
+    assert len(set(got)) == 5
+    assert await pool.acquire(AcquireStrategy.RANDOM) is None
+
+
+async def test_acquire_leased_at_uses_now_param(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1))
+    rec = await pool.acquire(now=1234.5)
+    assert rec.leased_at == 1234.5
+
+
+# ---------------------------------------------------------------------------
+# 提取筛选：max_latency_ms（延迟上限）/ min_remaining_sec（剩余时间下限）
+# ---------------------------------------------------------------------------
+
+
+async def test_acquire_filter_max_latency_ms(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1, latency=100.0))
+    await pool.upsert(_l2(make_l2, make_ip, 2, latency=500.0))
+    await pool.upsert(_l2(make_l2, make_ip, 3, latency=200.0))
+    # latest + 筛选：尾向前首个延迟达标者
+    rec = await pool.acquire(max_latency_ms=250.0)
+    assert rec.ip == "10.0.0.3"
+    rec2 = await pool.acquire(AcquireStrategy.LATENCY_ASC, max_latency_ms=150.0)
+    assert rec2.ip == "10.0.0.1"
+
+
+async def test_acquire_filter_max_latency_ms_excludes_all(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1, latency=100.0))
+    assert await pool.acquire(max_latency_ms=50.0) is None
+    assert pool.stats().leased_total == 0
+
+
+async def test_acquire_filter_min_remaining_sec(pool, make_l2, make_ip):
+    # 剩余时间（now=1000）：100 / 1000 / inf
+    await pool.upsert(make_l2(make_ip(1, ttl=100.0), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(2, ttl=1000.0), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(3, ttl=None), created_at=1000.0))
+    rec = await pool.acquire(min_remaining_sec=500.0, now=1000.0)
+    assert rec.ip == "10.0.0.3"  # 最新且 ttl=None 恒通过
+    rec2 = await pool.acquire(AcquireStrategy.REMAINING_DESC, min_remaining_sec=500.0, now=1000.0)
+    assert rec2.ip == "10.0.0.2"
+
+
+async def test_acquire_filter_min_remaining_excludes_expired_unswept(
+    pool, make_l2, make_ip
+):
+    """未及清扫的已过期记录（剩余 < 0）被 min_remaining_sec=0 排除；剩余恰为 0 仍通过。"""
+    await pool.upsert(make_l2(make_ip(1, ttl=50.0), created_at=1000.0))
+    assert await pool.acquire(min_remaining_sec=0.0, now=1100.0) is None
+    rec = await pool.acquire(min_remaining_sec=0.0, now=1050.0)
+    assert rec is not None and rec.ip == "10.0.0.1"
+
+
+async def test_acquire_skips_leased_under_filters(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1, latency=100.0))
+    await pool.upsert(_l2(make_l2, make_ip, 2, latency=500.0))
+    leased = await pool.acquire(max_latency_ms=600.0)  # 租走最新的 10.0.0.2
+    assert leased.ip == "10.0.0.2"
+    rec = await pool.acquire(AcquireStrategy.LATENCY_ASC, max_latency_ms=600.0)
+    assert rec.ip == "10.0.0.1"
+
+
+# ---------------------------------------------------------------------------
+# 批量提取 acquire_batch
+# ---------------------------------------------------------------------------
+
+
+async def test_acquire_batch_latest_order(pool, make_l2, make_ip):
+    for i in range(1, 6):
+        await pool.upsert(_l2(make_l2, make_ip, i))
+    batch = await pool.acquire_batch(3)
+    assert [r.ip for r in batch] == ["10.0.0.5", "10.0.0.4", "10.0.0.3"]
+    assert all(r.leased for r in batch)
+    assert pool.stats().leased_total == 3
+
+
+async def test_acquire_batch_latency_asc_sorted(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1, latency=300.0))
+    await pool.upsert(_l2(make_l2, make_ip, 2, latency=100.0))
+    await pool.upsert(_l2(make_l2, make_ip, 3, latency=200.0))
+    await pool.upsert(_l2(make_l2, make_ip, 4, latency=50.0))
+    batch = await pool.acquire_batch(2, AcquireStrategy.LATENCY_ASC)
+    assert [(r.ip, r.latency_ms) for r in batch] == [
+        ("10.0.0.4", 50.0),
+        ("10.0.0.2", 100.0),
+    ]
+
+
+async def test_acquire_batch_remaining_desc_sorted(pool, make_l2, make_ip):
+    await pool.upsert(make_l2(make_ip(1, ttl=100.0), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(2, ttl=None), created_at=1000.0))
+    await pool.upsert(make_l2(make_ip(3, ttl=1000.0), created_at=1000.0))
+    batch = await pool.acquire_batch(3, AcquireStrategy.REMAINING_DESC, now=1000.0)
+    assert [r.ip for r in batch] == ["10.0.0.2", "10.0.0.3", "10.0.0.1"]
+
+
+async def test_acquire_batch_random_unique(pool, make_l2, make_ip):
+    for i in range(1, 6):
+        await pool.upsert(_l2(make_l2, make_ip, i))
+    batch = await pool.acquire_batch(10, AcquireStrategy.RANDOM)
+    assert len(batch) == 5
+    assert len({r.ip for r in batch}) == 5
+    assert pool.stats().leased_total == 5
+
+
+async def test_acquire_batch_partial_then_empty(pool, make_l2, make_ip):
+    for i in range(1, 4):
+        await pool.upsert(_l2(make_l2, make_ip, i))
+    batch = await pool.acquire_batch(10)
+    assert len(batch) == 3
+    assert await pool.acquire_batch(10) == []
+    await pool.upsert(_l2(make_l2, make_ip, 9))
+    again = await pool.acquire_batch(10)
+    assert [r.ip for r in again] == ["10.0.0.9"]
+
+
+async def test_acquire_batch_with_filters(pool, make_l2, make_ip):
+    for i, lat in [(1, 100.0), (2, 500.0), (3, 200.0), (4, 50.0)]:
+        await pool.upsert(_l2(make_l2, make_ip, i, latency=lat))
+    batch = await pool.acquire_batch(5, max_latency_ms=250.0)
+    assert [r.ip for r in batch] == ["10.0.0.4", "10.0.0.3", "10.0.0.1"]
+
+
+async def test_acquire_batch_invalid_count_raises(pool, make_l2, make_ip):
+    with pytest.raises(ValueError):
+        await pool.acquire_batch(0)
+    with pytest.raises(ValueError):
+        await pool.acquire_batch(-1)
+    assert pool.stats().total == 0
+
+
+async def test_acquire_batch_string_strategy_accepted(pool, make_l2, make_ip):
+    await pool.upsert(_l2(make_l2, make_ip, 1, latency=200.0))
+    await pool.upsert(_l2(make_l2, make_ip, 2, latency=100.0))
+    batch = await pool.acquire_batch(1, "latency_asc")
+    assert batch[0].ip == "10.0.0.2"
+
+
+async def test_acquire_batch_atomic_concurrent(pool, make_l2, make_ip):
+    """100 并发批量提取（各 count=2）池容量 3：无重复租赁、总数恰为 3。"""
+    for i in range(1, 4):
+        await pool.upsert(_l2(make_l2, make_ip, i))
+    results = await asyncio.gather(*(pool.acquire_batch(2) for _ in range(100)))
+    leased = [rec for batch in results for rec in batch]
+    assert len(leased) == 3
+    assert len({rec.id for rec in leased}) == 3
+    assert pool.stats().leased_total == 3
+    assert all(rec.leased for rec in leased)

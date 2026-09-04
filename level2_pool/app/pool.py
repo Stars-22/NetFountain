@@ -2,17 +2,56 @@
 
 - 唯一键 = ``proxy_url``（ip+port+protocol 身份），同名记录去重；
 - 本地自增 id（不复用）供 API ``release/delete/{id}`` 精确引用；
-- ``acquire`` 最新优先：从入池顺序尾部向前扫描首个空闲项并原子标记租赁；
+- ``acquire`` 支持提取策略（默认最新优先：从入池顺序尾部向前扫描首个空闲项）
+  与延迟/剩余时间筛选，命中后原子标记租赁；单次提取不排序，
+  直接一次扫描取 argmin/argmax；``acquire_batch`` 单锁内原子提取多条；
+- 剩余时间 = ``created_at + ttl - now``（非 ttl 本身），``ttl=None`` 视为永不过期
+  （剩余时间无穷大：排序最优先、筛选恒通过）；
 - 租赁无过期时间，仅可被显式 ``release/remove/release_all`` 解除；
 - 所有变更在 ``asyncio.Lock`` 下进行，保证并发安全与分配原子性。
 """
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 
 from ip_pool_common.models import Level2Record, Protocol
+
+
+class AcquireStrategy(StrEnum):
+    """提取策略：``latest`` 最新优先 / ``random`` 随机 /
+    ``latency_asc`` 延迟从低到高 / ``remaining_desc`` 剩余时间从高到低。"""
+
+    LATEST = "latest"
+    RANDOM = "random"
+    LATENCY_ASC = "latency_asc"
+    REMAINING_DESC = "remaining_desc"
+
+
+def remaining_seconds(rec: Level2Record, now: float) -> float:
+    """剩余存活秒数：``created_at + ttl - now``；``ttl=None`` 永不过期 → ``inf``。"""
+    if rec.ttl is None:
+        return float("inf")
+    return rec.created_at + rec.ttl - now
+
+
+def _eligible(
+    rec: Level2Record,
+    now: float,
+    max_latency_ms: float | None,
+    min_remaining_sec: float | None,
+) -> bool:
+    """空闲且通过筛选：``latency_ms <= max_latency_ms`` 且剩余时间 >= ``min_remaining_sec``。"""
+    if rec.leased:
+        return False
+    if max_latency_ms is not None and rec.latency_ms > max_latency_ms:
+        return False
+    if min_remaining_sec is not None and remaining_seconds(rec, now) < min_remaining_sec:
+        return False
+    return True
 
 
 @dataclass
@@ -95,16 +134,89 @@ class Level2Pool:
             self._id_index[new_id] = key
             return stored
 
-    async def acquire(self) -> Level2Record | None:
-        """最新优先：从入池顺序尾部向前扫描首个空闲项，原子标记租赁并返回；全被租赁返回 None。"""
+    async def acquire(
+        self,
+        strategy: AcquireStrategy | str = AcquireStrategy.LATEST,
+        *,
+        max_latency_ms: float | None = None,
+        min_remaining_sec: float | None = None,
+        now: float | None = None,
+    ) -> Level2Record | None:
+        """按策略租赁一条空闲记录并原子标记租赁；无候选返回 None。
+
+        - 先按 ``max_latency_ms``（延迟上限）与 ``min_remaining_sec``（剩余时间下限，
+          默认均不筛选）过滤出空闲候选集；
+        - ``latest``：入池顺序尾部向前首个候选（默认，兼容旧行为）；
+        - ``random``：候选集均匀随机取一；
+        - ``latency_asc`` / ``remaining_desc``：单次提取不排序，一次扫描取
+          argmin/argmax（并列取先入池者）；
+        - 无候选（空池/全被租赁/全被筛选）返回 None。
+        """
         async with self._lock:
-            for key in reversed(self._order):
-                rec = self._records[key]
-                if not rec.leased:
-                    rec.leased = True
-                    rec.leased_at = time.time()
-                    return rec
-            return None
+            ts = time.time() if now is None else now
+            strat = AcquireStrategy(strategy)
+            candidates = [
+                rec
+                for rec in (self._records[key] for key in self._order)
+                if _eligible(rec, ts, max_latency_ms, min_remaining_sec)
+            ]
+            if not candidates:
+                return None
+            if strat is AcquireStrategy.LATEST:
+                chosen = candidates[-1]
+            elif strat is AcquireStrategy.RANDOM:
+                chosen = random.choice(candidates)
+            elif strat is AcquireStrategy.LATENCY_ASC:
+                chosen = min(candidates, key=lambda r: r.latency_ms)
+            else:  # REMAINING_DESC
+                chosen = max(candidates, key=lambda r: remaining_seconds(r, ts))
+            chosen.leased = True
+            chosen.leased_at = ts
+            return chosen
+
+    async def acquire_batch(
+        self,
+        count: int,
+        strategy: AcquireStrategy | str = AcquireStrategy.LATEST,
+        *,
+        max_latency_ms: float | None = None,
+        min_remaining_sec: float | None = None,
+        now: float | None = None,
+    ) -> list[Level2Record]:
+        """按策略单锁内原子租赁至多 ``count`` 条空闲记录，按选取顺序返回。
+
+        - 空闲不足 ``count`` 时返回能租到的全部（部分满足）；无候选返回 ``[]``；
+        - 选取顺序：``latest`` 最新在前 / ``latency_asc`` 延迟升序 /
+          ``remaining_desc`` 剩余时间降序（并列保持先入池在前）/ ``random`` 随机；
+        - ``count <= 0`` 抛 ``ValueError``（HTTP 层负责参数校验）。
+        """
+        if count <= 0:
+            raise ValueError(f"count must be positive, got {count}")
+        async with self._lock:
+            ts = time.time() if now is None else now
+            strat = AcquireStrategy(strategy)
+            candidates = [
+                rec
+                for rec in (self._records[key] for key in self._order)
+                if _eligible(rec, ts, max_latency_ms, min_remaining_sec)
+            ]
+            take = min(count, len(candidates))
+            if take == 0:
+                return []
+            if strat is AcquireStrategy.LATEST:
+                selected = list(reversed(candidates))[:take]
+            elif strat is AcquireStrategy.RANDOM:
+                selected = random.sample(candidates, take)
+            elif strat is AcquireStrategy.LATENCY_ASC:
+                selected = sorted(candidates, key=lambda r: r.latency_ms)[:take]
+            else:  # REMAINING_DESC
+                selected = sorted(
+                    candidates, key=lambda r: -remaining_seconds(r, ts)
+                )[:take]
+            for rec in selected:
+                rec.leased = True
+                rec.leased_at = ts
+            return selected
 
     async def release(self, id_: int) -> bool:
         """经本地 id 定位，解除租赁；无此 id 返回 False。"""

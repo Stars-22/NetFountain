@@ -1,4 +1,4 @@
-"""HTTP 路由：/health + 8 个按站点透传端点。
+"""HTTP 路由：/health + 9 个按站点透传端点。
 
 统一响应 {code,msg,data}：透传端点把上游二级池响应原样返回（不缓存、
 不加工任何 IP/租赁数据）；站点未配置返回 40400；上游不可达/超时返回 50200。
@@ -146,6 +146,11 @@ async def ips(site: str, request: Request):
 
 @router.post("/{site}/ips/acquire")
 async def acquire(site: str, request: Request):
+    return await _forward(request, site, "POST")
+
+
+@router.post("/{site}/ips/acquire-batch")
+async def acquire_batch(site: str, request: Request):
     return await _forward(request, site, "POST")
 
 

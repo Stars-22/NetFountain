@@ -82,6 +82,8 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/acquire
 
 取用 `data.proxy_url` 作为代理地址，并**记下 `data.id`** 供后续释放。
 
+> 默认返回**最新入池**的空闲 IP。`acquire` 还支持提取策略与延迟 / 剩余时间筛选、一次提取多条的 `acquire-batch`，详见 4.3 节。
+
 ### 步骤 2：用代理发起请求
 
 **curl（HTTP 代理）**
@@ -160,9 +162,9 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/3/release
 | code | 含义 | 说明 |
 |---|---|---|
 | 0 | 成功 | `msg="ok"` |
-| 40000 | 参数错误 | `PARAM_ERROR` |
+| 40000 | 参数错误 | `PARAM_ERROR`；`acquire/acquire-batch` 的 `strategy` 取值未知、`count` 缺失/非整数/`< 1`、筛选值非数字或为负 |
 | 40400 | 站点未配置 / 对象不存在 | 请求的 `{site}` 不在代理层路由表中；或 `release/delete` 的 `{id}` 不存在 |
-| 40402 | 空池 | `acquire` 时无空闲 IP（`free_total=0`） |
+| 40402 | 空池 | `acquire/acquire-batch` 时无空闲 IP（`free_total=0`）、全部已租赁，或筛选后无空闲候选 |
 | 50000 | 内部错误 | `INTERNAL` |
 | 50200 | 上游故障 | 代理层转发到上游二级池时不可达 / 超时 / 响应异常 |
 
@@ -178,7 +180,7 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/3/release
 
 ## 4. 代理层 API 详情
 
-代理层共 9 个对外端点。除 `/health` 外，其余 8 个为按站点透传端点，与二级池 API 一一对应。
+代理层共 10 个对外端点。除 `/health` 外，其余 9 个为按站点透传端点，与二级池 API 一一对应。
 
 ### 4.1 健康检查与路由表
 
@@ -290,7 +292,7 @@ curl http://127.0.0.1:9000/api/v1/site_a/status
 | `test_failures` | 站点测试批次异常次数 |
 | `revalidate_failures` | 周期复验异常次数 |
 | `ttl_sweep_failures` | TTL 清扫异常次数 |
-| `empty_acquires` | `acquire` 遇空池（或全租赁）次数 |
+| `empty_acquires` | `acquire` / `acquire-batch` 遇空池（全租赁或筛选后无候选）次数 |
 
 `pool_stats` 字段：
 
@@ -380,12 +382,29 @@ curl http://127.0.0.1:9000/api/v1/site_a/ips
 
 #### POST /api/v1/{site}/ips/acquire — 获取一个空闲 IP
 
-透传到二级池 `/api/v1/ips/acquire`。从池中**最新优先**（后入池的先分配）取一个空闲 IP，**原子标记为已租赁**并返回。
+透传到二级池 `/api/v1/ips/acquire`。按**提取策略**选取一条空闲 IP，**原子标记为已租赁**并返回。
+
+**可选 query 参数**（全部不传 = 默认行为：最新优先、不筛选，兼容旧调用）：
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `strategy` | str | `latest` | 提取策略：`latest` 最新优先（默认）/ `random` 随机 / `latency_asc` 延迟从低到高 / `remaining_desc` 剩余时间从高到低 |
+| `max_latency_ms` | float | 不筛选 | 延迟上限筛选：仅提取 `latency_ms <= max_latency_ms` 的记录 |
+| `min_remaining_sec` | float | 不筛选 | 剩余时间下限筛选：仅提取剩余时间 `>= min_remaining_sec` 的记录 |
+
+> **剩余时间** = `created_at + ttl - 当前时间`（不是 `ttl` 字段本身）。`ttl=null`（永不过期）视为剩余时间无穷大：`remaining_desc` 排序最优先、`min_remaining_sec` 筛选恒通过。
+>
+> **单条提取不排序**：`latency_asc` / `remaining_desc` 直接取延迟最低 / 剩余时间最长的一条（并列取先入池者）。
 
 请求示例：
 
 ```bash
+# 默认：最新优先，不筛选
 curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/acquire
+# 按延迟从低到高提取，且只要延迟 <= 200ms 的
+curl -X POST "http://127.0.0.1:9000/api/v1/site_a/ips/acquire?strategy=latency_asc&max_latency_ms=200"
+# 按剩余时间从高到低提取，且剩余存活 >= 60 秒
+curl -X POST "http://127.0.0.1:9000/api/v1/site_a/ips/acquire?strategy=remaining_desc&min_remaining_sec=60"
 ```
 
 成功响应（`data` 为单条记录，`leased=true`）：
@@ -408,7 +427,7 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/acquire
 }
 ```
 
-空池（`free_total=0`）返回（HTTP `200`，以 body 的 code 判断）：
+空池（`free_total=0`）、全部已租赁或筛选后无候选返回（HTTP `200`，以 body 的 code 判断）：
 
 ```json
 {
@@ -418,7 +437,56 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/acquire
 }
 ```
 
+参数非法（`strategy` 取值未知、筛选值非数字或为负）返回 `{"code": 40000, "msg": "...", "data": null}`。
+
 > 高并发下同一 IP 不会重复分配（二级池在锁内原子操作）。空池时可稍后重试，二级池会周期性从一级池同步补货。
+
+#### POST /api/v1/{site}/ips/acquire-batch — 批量获取空闲 IP
+
+透传到二级池 `/api/v1/ips/acquire-batch`。单锁内原子执行，按提取策略与筛选参数（与 `acquire` 相同的 `strategy` / `max_latency_ms` / `min_remaining_sec`，见上表）一次租赁至多 `count` 条空闲 IP。
+
+**query 参数**：
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `count` | int | 必填 | 期望提取数量，须 `>= 1`；缺失 / 非整数 / `< 1` 返回 `code: 40000` |
+| `strategy` | str | `latest` | 同 `acquire` |
+| `max_latency_ms` | float | 不筛选 | 同 `acquire` |
+| `min_remaining_sec` | float | 不筛选 | 同 `acquire` |
+
+- **部分满足**：空闲不足 `count` 时**尽量多给**，返回实际租到的全部（仍为 `code: 0`）；
+- `data` 为**数组**，按选取顺序排列：`latest` 最新在前 / `latency_asc` 延迟升序 / `remaining_desc` 剩余时间降序 / `random` 随机；
+- 一条都租不到（空池 / 全租赁 / 筛选后无候选）返回 `code: 40402`。
+
+请求示例：
+
+```bash
+# 批量取 5 个，按延迟升序，只要延迟 <= 300ms 的
+curl -X POST "http://127.0.0.1:9000/api/v1/site_a/ips/acquire-batch?count=5&strategy=latency_asc&max_latency_ms=300"
+```
+
+成功响应（`data` 为数组，每条 `leased=true`）：
+
+```json
+{
+  "code": 0,
+  "msg": "ok",
+  "data": [
+    {
+      "id": 3, "ip": "1.2.3.4", "port": 8080, "protocol": "http",
+      "proxy_url": "http://1.2.3.4:8080", "latency_ms": 210.0,
+      "leased": true, "ttl": 120.0, "created_at": 1766880000.0
+    },
+    {
+      "id": 7, "ip": "5.6.7.8", "port": 1080, "protocol": "socks5",
+      "proxy_url": "socks5://5.6.7.8:1080", "latency_ms": 280.0,
+      "leased": true, "ttl": 120.0, "created_at": 1766880010.0
+    }
+  ]
+}
+```
+
+> 批量拿到的每条记录同样需要 `release` / `delete` 归还；`count` 不设上限，请按实际需要取用。
 
 #### POST /api/v1/{site}/ips/{id}/release — 释放指定 IP
 
@@ -486,7 +554,8 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/release-all
 | GET | `/api/v1/{site}/status` | 站点运行状态与池内统计 |
 | GET | `/api/v1/{site}/count` | 池内计数（空闲/租赁/按协议） |
 | GET | `/api/v1/{site}/ips` | 全部 IP 列表（不标记） |
-| POST | `/api/v1/{site}/ips/acquire` | 获取 1 个空闲 IP 并租赁 |
+| POST | `/api/v1/{site}/ips/acquire` | 按策略获取 1 个空闲 IP 并租赁（可选筛选） |
+| POST | `/api/v1/{site}/ips/acquire-batch` | 按策略批量获取至多 `count` 个空闲 IP 并租赁 |
 | POST | `/api/v1/{site}/ips/{id}/release` | 释放指定 IP |
 | DELETE | `/api/v1/{site}/ips/{id}` | 删除指定 IP |
 | POST | `/api/v1/{site}/ips/release-all` | 释放全部 |
@@ -495,9 +564,10 @@ curl -X POST http://127.0.0.1:9000/api/v1/site_a/ips/release-all
 
 ## 6. 使用建议
 
-- **获取 / 释放配对**：租赁无过期时间，`acquire` 后请在业务结束或代理失效时 `release`（或必要时 `delete`），避免长期占用空闲池。
+- **获取 / 释放配对**：租赁无过期时间，`acquire` / `acquire-batch` 后请在业务结束或代理失效时 `release`（或必要时 `delete`），避免长期占用空闲池。
+- **善用提取策略**：对延迟敏感的场景用 `strategy=latency_asc`（可叠加 `max_latency_ms` 上限）；不想拿到快过期的 IP 用 `min_remaining_sec` 下限；需要一次多个 IP 时用 `acquire-batch`（`count` 必填，空闲不足时返回能租到的全部）。
 - **判断成功看 `code`**：空池（40402）等业务错误 HTTP 仍为 `200`，请以 body 的 `code == 0` 判断结果。
-- **空池重试**：`acquire` 遇 40402 说明当前无空闲 IP，可稍后重试；二级池会周期性从一级池同步并补入新 IP。
+- **空池重试**：`acquire` / `acquire-batch` 遇 40402 说明当前无可用空闲 IP（含筛选后无候选），可放宽筛选条件或稍后重试；二级池会周期性从一级池同步并补入新 IP。
 - **`{site}` 一致性**：`{site}` 必须与代理层路由表中的站点名一致（见 `/health` 返回），否则返回 HTTP `404` / `40400`。
 - **`{id}` 作用域**：`id` 是站点内本地自增值，仅在同一个 `{site}` 下有效；不同站点的 id 互不通用。
 - **直连说明**：本手册统一经代理层网关访问。若需直接访问二级池，其 API 与本手册 4.2 / 4.3 节完全一致，仅去掉 `{site}` 段（例如 `POST http://127.0.0.1:8001/api/v1/ips/acquire`），但对外推荐统一走代理层。

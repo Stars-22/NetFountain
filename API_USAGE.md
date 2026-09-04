@@ -195,7 +195,7 @@ GET /api/v1/ips/after/100
 
 ## 3. 二级池 API（level2_pool, :8001+）
 
-二级池共 7 个接口。每条记录字段结构如下（`/api/v1/ips` 及 `acquire` 返回）：
+二级池共 8 个接口。每条记录字段结构如下（`/api/v1/ips` 及 `acquire` 返回）：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -307,15 +307,33 @@ GET /api/v1/ips/after/100
 
 ### 3.4 POST /api/v1/ips/acquire
 
-租赁一条代理：租赁最新的空闲记录（按插入顺序从尾部向前扫描），标记 `leased=true` 并设置 `leased_at`。租赁操作在锁内原子执行。
+租赁一条代理：按提取策略选取一条空闲记录，标记 `leased=true` 并设置 `leased_at`。租赁操作在锁内原子执行。
 
-**请求**：无参数、无请求体。
+**提取策略与筛选参数**（均为可选 query 参数；**全部不传 = 旧行为**，完全向后兼容）：
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `strategy` | str | `latest` | 提取策略：`latest` 最新优先（默认）/ `random` 随机 / `latency_asc` 延迟从低到高 / `remaining_desc` 剩余时间从高到低 |
+| `max_latency_ms` | float | 不筛选 | 延迟上限筛选：仅提取 `latency_ms <= max_latency_ms` 的记录 |
+| `min_remaining_sec` | float | 不筛选 | 剩余时间下限筛选：仅提取剩余时间 `>= min_remaining_sec` 的记录 |
+
+> **剩余时间** = `created_at + ttl - 当前时间`（不是 `ttl` 字段本身）；`ttl=null`（永不过期）视为剩余时间无穷大：`remaining_desc` 排序最优先、`min_remaining_sec` 筛选恒通过。
+>
+> **单条提取不排序**：`latency_asc` / `remaining_desc` 直接一次扫描取延迟最低 / 剩余时间最长者（并列取先入池者），不做全量排序。
+>
+> 非法参数（`strategy` 取值未知、筛选值非数字或为负）返回 `code: 40000`；筛选后无空闲候选与空池/全租赁同样返回 `code: 40402`。
 
 **响应**：
 - 成功：HTTP 200，`data` 为被租赁的记录，`leased: true`。
-- 失败（空池或全部已租赁）：HTTP 200，`code: 40402`，`msg: "empty pool: no free ip available"`，`data: null`。
+- 失败（空池/全部已租赁/筛选后无候选）：HTTP 200，`code: 40402`，`msg: "empty pool: no free ip available"`，`data: null`。
 
-**示例（成功）**：
+**示例**：
+
+```
+POST /api/v1/ips/acquire
+POST /api/v1/ips/acquire?strategy=latency_asc&max_latency_ms=200
+POST /api/v1/ips/acquire?strategy=remaining_desc&min_remaining_sec=60
+```
 
 ```json
 {
@@ -382,11 +400,48 @@ GET /api/v1/ips/after/100
 { "code": 0, "msg": "ok", "data": 3 }
 ```
 
+### 3.8 POST /api/v1/ips/acquire-batch
+
+批量租赁代理：单锁内原子执行，按提取策略与筛选参数（同 3.4，见上表）一次租赁至多 `count` 条空闲记录。
+
+**请求**（query 参数）：
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `count` | int | 必填 | 期望提取数量，须 `>= 1`；缺失/非整数/`< 1` 返回 `code: 40000` |
+| `strategy` | str | `latest` | 同 3.4 |
+| `max_latency_ms` | float | 不筛选 | 同 3.4 |
+| `min_remaining_sec` | float | 不筛选 | 同 3.4 |
+
+**响应**：
+- 成功：HTTP 200，`code: 0`，`data` 为被租赁记录的**数组**，按选取顺序排列（`latest` 最新在前 / `latency_asc` 延迟升序 / `remaining_desc` 剩余时间降序 / `random` 随机）。空闲不足 `count` 时**尽量多给**（部分满足，仍为 `code: 0`）。
+- 失败（一条都租不到）：HTTP 200，`code: 40402`，`data: null`。
+
+**示例**：
+
+```
+POST /api/v1/ips/acquire-batch?count=5&strategy=latency_asc&max_latency_ms=300
+```
+
+```json
+{
+  "code": 0, "msg": "ok",
+  "data": [
+    { "id": 3, "ip": "3.3.3.3", "port": 3128, "protocol": "http",
+      "proxy_url": "http://3.3.3.3:3128", "latency_ms": 90.0,
+      "leased": true, "ttl": 3600.0, "created_at": 1690000900.0 },
+    { "id": 10, "ip": "9.9.9.9", "port": 1080, "protocol": "socks5",
+      "proxy_url": "socks5://9.9.9.9:1080", "latency_ms": 120.0,
+      "leased": true, "ttl": 3600.0, "created_at": 1690001000.0 }
+  ]
+}
+```
+
 ---
 
 ## 4. 代理层 API（proxy, :9000）
 
-代理层共 8 个接口，除 `/api/v1/health` 外均为透传接口（`{site}` 为路由表中的站点标识）。透传接口的响应与上游二级池一致，见上文各对应接口。
+代理层共 9 个接口，除 `/api/v1/health` 外均为透传接口（`{site}` 为路由表中的站点标识）。透传接口的响应与上游二级池一致，见上文各对应接口。
 
 ### 4.1 GET /api/v1/health
 
@@ -470,9 +525,13 @@ GET /api/v1/ips/after/100
 
 ### 4.5 POST /api/v1/{site}/ips/acquire
 
-透传 → 上游二级池 `POST /api/v1/ips/acquire`。请求体为原始 JSON 原样转发（可为空）；成功返回被租赁记录，空池时返回 `code: 40402`。
+透传 → 上游二级池 `POST /api/v1/ips/acquire`。查询参数（`strategy` / `max_latency_ms` / `min_remaining_sec`）与请求体原始 JSON 原样转发（可为空）；成功返回被租赁记录，空池时返回 `code: 40402`。
 
-### 4.6 POST /api/v1/{site}/ips/{id}/release
+### 4.6 POST /api/v1/{site}/ips/acquire-batch
+
+透传 → 上游二级池 `POST /api/v1/ips/acquire-batch`。查询参数（`count` 及 3.4 的策略/筛选参数）原样转发；成功返回被租赁记录数组（部分满足仍为 `code: 0`），一条都租不到返回 `code: 40402`。
+
+### 4.7 POST /api/v1/{site}/ips/{id}/release
 
 透传 → 上游二级池 `POST /api/v1/ips/{id}/release`。
 
@@ -482,7 +541,7 @@ GET /api/v1/ips/after/100
 
 请求体可选原始 JSON，原样转发。成功返回 `data: true`，记录不存在返回 `code: 40400`。
 
-### 4.7 DELETE /api/v1/{site}/ips/{id}
+### 4.8 DELETE /api/v1/{site}/ips/{id}
 
 透传 → 上游二级池 `DELETE /api/v1/ips/{id}`。
 
@@ -492,7 +551,7 @@ GET /api/v1/ips/after/100
 
 成功返回 `data: true`，记录不存在返回 `code: 40400`。
 
-### 4.8 POST /api/v1/{site}/ips/release-all
+### 4.9 POST /api/v1/{site}/ips/release-all
 
 透传 → 上游二级池 `POST /api/v1/ips/release-all`。请求体可选原始 JSON，原样转发；成功返回释放数量 `data: <int>`。
 
@@ -516,7 +575,8 @@ GET /api/v1/ips/after/100
 | GET | `/api/v1/status` | — | — | 服务+池统计 | — |
 | GET | `/api/v1/count` | — | — | 池统计 | — |
 | GET | `/api/v1/ips` | — | — | 记录数组 | — |
-| POST | `/api/v1/ips/acquire` | — | — | 记录(leased=true) | 40402 |
+| POST | `/api/v1/ips/acquire` | `strategy`/`max_latency_ms`/`min_remaining_sec`(可选) | — | 记录(leased=true) | 40000, 40402 |
+| POST | `/api/v1/ips/acquire-batch` | `count`(必填)+同 acquire 可选参数 | — | 记录数组(leased=true) | 40000, 40402 |
 | POST | `/api/v1/ips/{id}/release` | `id`(int) | — | `true` | 40400 |
 | DELETE | `/api/v1/ips/{id}` | `id`(int) | — | `true` | 40400 |
 | POST | `/api/v1/ips/release-all` | — | — | 释放数量(int) | — |
@@ -530,6 +590,7 @@ GET /api/v1/ips/after/100
 | GET | `/api/v1/{site}/count` | `site` | — | 上游透传 |
 | GET | `/api/v1/{site}/ips` | `site` | — | 上游透传 |
 | POST | `/api/v1/{site}/ips/acquire` | `site` | 原始 JSON | 上游透传 |
+| POST | `/api/v1/{site}/ips/acquire-batch` | `site` | 原始 JSON | 上游透传 |
 | POST | `/api/v1/{site}/ips/{id}/release` | `site`,`id`(int) | 原始 JSON | 上游透传 |
 | DELETE | `/api/v1/{site}/ips/{id}` | `site`,`id`(int) | — | 上游透传 |
 | POST | `/api/v1/{site}/ips/release-all` | `site` | 原始 JSON | 上游透传 |

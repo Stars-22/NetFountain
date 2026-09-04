@@ -1,4 +1,4 @@
-"""routes.py 测试：/health、8 个透传端点、未配置站点、上游错误码、业务码日志。
+"""routes.py 测试：/health、9 个透传端点、未配置站点、上游错误码、业务码日志。
 
 覆盖测试计划书 PX-RT-001 ~ 009。
 """
@@ -223,6 +223,32 @@ async def test_acquire_passthrough(running_app, registry, aio_mock):
         resp = await client.post("/api/v1/site_a/ips/acquire")
     assert resp.status_code == 200
     assert resp.json() == payload
+
+
+# PX-RT-005 /{site}/ips/acquire-batch 透传（含 query 参数原样转发）
+async def test_acquire_batch_passthrough(running_app, registry, aio_mock):
+    payload = {
+        "code": 0,
+        "msg": "ok",
+        "data": [{"id": 7, "leased": True}, {"id": 8, "leased": True}],
+    }
+    aio_mock.post(
+        "http://127.0.0.1:8001/api/v1/ips/acquire-batch?count=2&strategy=latency_asc",
+        payload=payload,
+        status=200,
+    )
+    app = _proxy_app(registry)
+    async with running_app(app) as client:
+        resp = await client.post(
+            "/api/v1/site_a/ips/acquire-batch?count=2&strategy=latency_asc"
+        )
+    assert resp.status_code == 200
+    assert resp.json() == payload
+    calls = _json_calls(aio_mock, "POST", "http://127.0.0.1:8001/api/v1/ips/acquire-batch")
+    assert calls and calls[-1].kwargs["params"] == {
+        "count": "2",
+        "strategy": "latency_asc",
+    }
 
 
 # 透传端点带 JSON body（原样透传到上游）
