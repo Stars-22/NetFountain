@@ -8,8 +8,9 @@ from __future__ import annotations
 import time
 
 from app.config import Level2Settings
+from app.core.pool import Level2Pool
+from app.core.stats import ServiceStats
 from app.main import create_app
-from app.pool import Level2Pool, ServiceStats
 from ip_pool_common.models import Protocol
 
 

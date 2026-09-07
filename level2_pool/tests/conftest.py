@@ -22,7 +22,7 @@ import aioresponses.core
 import pytest
 from aiohttp.http_writer import StreamWriter
 
-from app.pool import Level2Pool
+from app.core.pool import Level2Pool
 from ip_pool_common.models import IpRecord, Level2Record, Protocol, build_proxy_url
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ async def mixed_pool(make_ip, make_l2):
 @pytest.fixture
 def tester_factory():
     """Tester 工厂：``tester_factory(site_fn=..., revalidate_fn=..., threshold=...)``。"""
-    from app.tester import Tester
+    from app.testing.tester import Tester
 
     def _make(
         site_fn=None,

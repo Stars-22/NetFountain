@@ -21,11 +21,12 @@ from app.config import (
     SiteConfig,
     SyncConfig,
 )
+from app.core.pool import Level2Pool
+from app.core.stats import ServiceStats
 from app.main import create_app
-from app.pool import Level2Pool, ServiceStats
-from app.syncer import Level1SyncClient, SyncTask
+from app.sync import Level1SyncClient, SyncTask
 from app.tasks import RevalidateTask, TtlSweeper
-from app.tester import Tester as _Tester
+from app.testing.tester import Tester as _Tester
 
 
 class _StopLoop(Exception):

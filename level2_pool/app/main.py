@@ -1,6 +1,7 @@
-"""FastAPI 装配：lifespan 创建/关闭资源、启停后台任务，注册路由与调用计数中间件。
+"""FastAPI 装配：lifespan 创建/关闭资源、启停后台任务，注册路由与中间件。
 
-- 中间件只统计 /api/v1 业务端点调用次数（写入 ``app.state.stats.api_call_count``）；
+- 中间件只统计 /api/v1 业务端点调用次数（写入 ``app.state.stats.api_call_count``，
+  经 ``ApiCounterMiddleware`` 的 path_prefix/counter 注入点参数化，无子类）；
 - ``create_app`` 全部组件可注入（供测试），未注入的在 lifespan 内按配置创建；
 - 模块级 ``app`` 供 ``uvicorn app.main:app`` 使用（自动加载 config/level2_pool.yaml）。
 """
@@ -19,12 +20,13 @@ from fastapi import FastAPI
 from ip_pool_common.api import ApiCounterMiddleware, BizCodeLogMiddleware
 from ip_pool_common.logging_setup import setup_logging
 
+from .api import router
 from .config import Level2Settings, load_level2_settings
-from .pool import Level2Pool, ServiceStats
-from .routes import router
-from .syncer import Level1SyncClient, SyncTask
+from .core.pool import Level2Pool
+from .core.stats import ServiceStats
+from .sync import Level1SyncClient, SyncTask
 from .tasks import RevalidateTask, TtlSweeper
-from .tester import Tester
+from .testing import Tester
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +34,17 @@ _CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "config", "level2_pool.yaml"
 )
 
+__all__ = ["create_app", "app"]
 
-class V1CounterMiddleware(ApiCounterMiddleware):
+
+def _v1_counter(scope: dict) -> None:
     """只统计 /api/v1 业务端点的调用次数，计数写入 ``app.state.stats.api_call_count``。"""
-
-    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope.get("path", "").startswith("/api/v1"):
-            app = scope.get("app")
-            state = getattr(app, "state", None)
-            if state is not None:
-                stats = getattr(state, "stats", None)
-                if stats is not None:
-                    stats.api_call_count += 1
-        await self.app(scope, receive, send)
+    app = scope.get("app")
+    state = getattr(app, "state", None)
+    if state is not None:
+        stats = getattr(state, "stats", None)
+        if stats is not None:
+            stats.api_call_count += 1
 
 
 def create_app(
@@ -132,7 +132,7 @@ def create_app(
     app.state.pool = pool
     app.state.stats = stats
     app.state.start_time = start_time if start_time is not None else time.time()
-    app.add_middleware(V1CounterMiddleware)
+    app.add_middleware(ApiCounterMiddleware, path_prefix="/api/v1", counter=_v1_counter)
     app.add_middleware(BizCodeLogMiddleware)
     app.include_router(router)
     return app
