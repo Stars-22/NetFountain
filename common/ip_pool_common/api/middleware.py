@@ -1,59 +1,67 @@
-"""API 通用件：统一错误码、响应封装、调用计数中间件、业务码日志中间件、统一启动入口。"""
+"""ASGI 中间件：调用计数、业务码日志。
+
+均支持 ``add_middleware`` 装配方式；计数中间件通过 ``path_prefix`` 与
+``counter`` 参数化扩展（统计口径/落点由装配方注入），不再需要子类化。
+"""
 from __future__ import annotations
 
 import json
 import logging
 import threading
-from enum import IntEnum
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-
-class ErrorCode(IntEnum):
-    """统一错误码。"""
-
-    OK = 0
-    PARAM_ERROR = 40000
-    NOT_FOUND = 40400          # 站点未配置/对象不存在
-    EMPTY_POOL = 40402         # 二级池 acquire 空池
-    INTERNAL = 50000
-    UPSTREAM_ERROR = 50200     # 代理层转发上游故障
-
-
-def ok(data: Any = None, **extra: Any) -> dict[str, Any]:
-    """统一成功响应：``{"code": 0, "msg": "ok", "data": data, **extra}``。
-
-    ``extra`` 用于附加顶层业务字段（如增量接口的 ``max_id``），不破坏原契约。
-    """
-    return {"code": ErrorCode.OK, "msg": "ok", "data": data, **extra}
-
-
-def err(code: int | ErrorCode, msg: str) -> dict[str, Any]:
-    """统一失败响应：``{"code": code, "msg": msg, "data": None}``。"""
-    return {"code": int(code), "msg": msg, "data": None}
+__all__ = ["ApiCounterMiddleware", "BizCodeLogMiddleware"]
 
 
 class ApiCounterMiddleware:
     """API 调用计数中间件（纯 ASGI，thread/async 安全）。
 
-    用法：``app.add_middleware(ApiCounterMiddleware)``，
-    通过 ``middleware.count`` 读取累计调用次数。
+    用法：``app.add_middleware(ApiCounterMiddleware, path_prefix=..., counter=...)``。
+
+    - ``path_prefix``：仅统计匹配前缀的 http 请求；None 时统计全部
+      http/websocket 请求（旧行为）；
+    - ``counter``：命中时的计数回调，参数为当前 ``scope``；None 时内部累计，
+      经 ``count`` 属性读取。
     """
 
-    def __init__(self, app: Any) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        path_prefix: str | None = None,
+        counter: Callable[[dict], None] | None = None,
+    ) -> None:
         self.app = app
+        self.path_prefix = path_prefix
+        self._external_counter = counter
         self._lock = threading.Lock()
         self._count = 0
 
+    def _hit(self, scope: dict) -> None:
+        if self._external_counter is not None:
+            self._external_counter(scope)
+            return
+        with self._lock:
+            self._count += 1
+
+    def _should_count(self, scope: dict) -> bool:
+        if self.path_prefix is not None:
+            return scope["type"] == "http" and scope.get("path", "").startswith(
+                self.path_prefix
+            )
+        return scope["type"] in ("http", "websocket")
+
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if scope["type"] in ("http", "websocket"):
-            with self._lock:
-                self._count += 1
+        if self._should_count(scope):
+            self._hit(scope)
         await self.app(scope, receive, send)
 
     @property
     def count(self) -> int:
+        """内部累计的调用次数（注入外部 counter 时不累计）。"""
         with self._lock:
             return self._count
 
@@ -107,12 +115,3 @@ class BizCodeLogMiddleware:
                 scope.get("method", "-"),
                 scope.get("path", "-"),
             )
-
-
-async def run_app(app: Any, host: str, port: int) -> None:
-    """统一 uvicorn 启动入口（uvicorn 延迟导入）。"""
-    import uvicorn  # noqa: PLC0415
-
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    await server.serve()

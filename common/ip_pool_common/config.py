@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any
 
@@ -60,10 +61,25 @@ def _read_env_overrides(prefix: str) -> dict[str, Any]:
     return result
 
 
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
-    """原地合并：键值覆盖，嵌套 dict 递归合并。"""
+def deep_merge(
+    base: dict[str, Any], override: dict[str, Any]
+) -> dict[str, Any]:
+    """递归合并两个 dict 并返回新 dict：嵌套 dict 逐层合并，标量键值覆盖。
+
+    全系统唯一的 deep_merge 实现（多供应商/多子池配置装配共用）；
+    不修改入参。
+    """
+    result = copy.deepcopy(base)
     for key, value in override.items():
-        if isinstance(base.get(key), dict) and isinstance(value, dict):
-            _deep_merge(base[key], value)
+        if isinstance(result.get(key), dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
         else:
-            base[key] = value
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
+    """原地合并：键值覆盖，嵌套 dict 递归合并（兼容旧签名，内部复用 deep_merge）。"""
+    merged = deep_merge(base, override)
+    base.clear()
+    base.update(merged)
