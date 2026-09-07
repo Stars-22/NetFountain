@@ -16,5 +16,5 @@ dependencies = [
     "pyyaml",
 ]
 
-[tool.setuptools]
-packages = ["ip_pool_common"]
+[tool.setuptools.packages.find]
+include = ["ip_pool_common*"]

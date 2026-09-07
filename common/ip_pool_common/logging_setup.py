@@ -107,10 +107,17 @@ class PoolLogHandler(logging.FileHandler):
     幂等：同一日志文件路径只添加一次 handler。
     """
 
-    def __init__(self, log_file: str, thread_name: str, level: str = "INFO") -> None:
+    def __init__(
+        self,
+        log_file: str,
+        thread_name: str,
+        level: str = "INFO",
+        *,
+        service_name: str,
+    ) -> None:
         super().__init__(log_file, encoding="utf-8")
         self.setLevel(level.upper())
-        self.setFormatter(_ServiceFormatter(_POOL_FMT, "level2_pool"))
+        self.setFormatter(_ServiceFormatter(_POOL_FMT, service_name))
         self.addFilter(_ThreadPoolFilter(thread_name))
 
 
@@ -126,7 +133,7 @@ def setup_pool_logging(
 
     - 注册 ``threadName → pool``（供聚合 stdout 的 %(pool)s 标签）；
     - 在根 logger 上添加只接收该线程名的 ``PoolLogHandler``（幂等），
-      日志写入 ``log_dir/level2_pool_<pool_name>.log``；
+      日志写入 ``log_dir/<service_name>_<pool_name>.log``；
     - 返回日志文件路径；``log_dir`` 为空时仅注册线程映射，不写文件。
 
     注意：多开进程内根 logger 的 stdout handler 由 ``setup_logging`` 统一初始化一次，
@@ -144,7 +151,9 @@ def setup_pool_logging(
         for h in root.handlers
     )
     if not has_pool_handler:
-        handler = PoolLogHandler(log_file, thread_name, level=level)
+        handler = PoolLogHandler(
+            log_file, thread_name, level=level, service_name=service_name
+        )
         root.addHandler(handler)
     else:
         for h in root.handlers:
