@@ -5,9 +5,9 @@
   "type": "module",
   "description": "NetFountain IP 代理池前端面板 + 数据聚合后端 BFF",
   "scripts": {
-    "dev": "concurrently -k -n BFF,VITE -c blue,green \"node server/server.js\" \"vite\"",
+    "dev": "concurrently -k -n BFF,VITE -c blue,green \"node server/index.js\" \"vite\"",
     "build": "vue-tsc --noEmit && vite build",
-    "start": "node server/server.js"
+    "start": "node server/index.js"
   },
   "dependencies": {
     "echarts": "^5.6.0",
