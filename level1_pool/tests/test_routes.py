@@ -4,8 +4,9 @@ from __future__ import annotations
 import time
 
 from app.config import Level1Settings
+from app.core.pool import Level1Pool
+from app.core.stats import ServiceStats
 from app.main import create_app
-from app.pool import Level1Pool, ServiceStats
 from ip_pool_common.models import Protocol, ProviderIp
 
 _PROTOCOLS = [Protocol.HTTP, Protocol.HTTPS, Protocol.SOCKS4, Protocol.SOCKS5]

@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from app.pool import Level1Pool
+from app.core.pool import Level1Pool
 from ip_pool_common.models import Protocol
 
 

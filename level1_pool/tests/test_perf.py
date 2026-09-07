@@ -12,10 +12,11 @@ import httpx
 import pytest
 
 from app.config import Level1Settings
+from app.core.pool import Level1Pool
+from app.core.stats import ServiceStats
 from app.main import create_app
-from app.pool import Level1Pool, ServiceStats
 from app.tasks import PullTask
-from app import tester as tester_mod
+from app.testing import tester as tester_mod
 from ip_pool_common.models import Protocol, ProviderIp
 
 

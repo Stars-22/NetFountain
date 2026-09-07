@@ -12,6 +12,8 @@ from ip_pool_common.testing import batch_test, proxy_reachability_test
 
 TestFn = Callable[[ProviderIp], Awaitable[tuple[bool, float]]]
 
+__all__ = ["Tester"]
+
 
 class Tester:
     """并发代理可达性测试器；可通过 ``test_fn`` 注入替换验证策略。"""

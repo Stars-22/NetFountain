@@ -21,7 +21,7 @@ import pytest
 from aiohttp.http_writer import StreamWriter
 
 from app.config import ProviderConfig
-from app.pool import Level1Pool
+from app.core.pool import Level1Pool
 from ip_pool_common.models import Protocol, ProviderIp
 
 # ---------------------------------------------------------------------------

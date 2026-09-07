@@ -11,7 +11,7 @@ import pytest
 
 from app.config import Level1Settings, PoolConfig, ProviderConfig
 from app.main import create_app
-from app import tester as tester_mod
+from app.testing import tester as tester_mod
 
 
 async def _always_pass(ip):

@@ -8,16 +8,17 @@ import asyncio
 import pytest
 
 import mock_provider
-from app import tester as tester_mod
 from app.config import (
     Level1Settings,
     PoolConfig,
     ProviderRuntime,
     load_level1_pool_config,
 )
+from app.core.pool import Level1Pool
+from app.core.stats import ProviderStats, ServiceStats
 from app.main import create_app
-from app.pool import Level1Pool, ProviderStats, ServiceStats
 from app.tasks import PullTask
+from app.testing import tester as tester_mod
 from ip_pool_common.models import Protocol, ProviderIp
 
 
