@@ -9,12 +9,21 @@ common/
 ├── README.md
 ├── pyproject.toml                 # 打包为 ip_pool_common，供三项目依赖
 └── ip_pool_common/
-    ├── __init__.py                # 统一导出
-    ├── models.py                  # 协议枚举、记录/统计数据结构
-    ├── testing.py                 # 代理可达性测试 + 站点连通测试原语
-    ├── config.py                  # YAML + pydantic-settings 配置加载
-    ├── logging_setup.py           # 结构化日志初始化
-    └── api.py                     # 统一响应封装、错误码、API 计数器中间件
+    ├── __init__.py                # 统一导出（保持旧导出名兼容）
+    ├── models.py                  # 协议枚举、记录数据结构
+    ├── errors.py                  # 测试错误分类注册表（register_error_rule 扩展点）
+    ├── concurrency.py             # 通用并发设施：TickLoop / BoundedTestPipeline / run_periodic
+    ├── config.py                  # YAML + pydantic-settings 配置加载 + deep_merge（唯一实现）
+    ├── logging_setup.py           # 结构化日志初始化与子池日志拆分
+    ├── testing/                   # 代理测试原语
+    │   ├── reachability.py        # 纯握手代理可达性（零出口流量）
+    │   ├── site.py                # 站点连通（唯一出口验证）
+    │   └── batch.py               # 批量并发执行器（batch_test / run_batch_detailed）
+    └── api/                       # API 通用件
+        ├── codes.py               # ErrorCode 统一错误码
+        ├── responses.py           # {code,msg,data} 响应封装
+        ├── middleware.py          # 计数/业务码日志中间件（path_prefix+counter 注入）
+        └── runner.py              # 统一 uvicorn 启动入口
 ```
 
 ## 依赖关系（依赖方向）
