@@ -17,6 +17,8 @@ from ip_pool_common.config import load_yaml
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["Registry", "SiteRoute"]
+
 _URL_FETCH_TIMEOUT = 10.0
 
 

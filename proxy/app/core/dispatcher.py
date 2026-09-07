@@ -12,6 +12,8 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["Dispatcher", "SiteNotFound", "UpstreamError", "strip_site"]
+
 _API_PREFIX = "/api/v1/"
 
 
@@ -56,7 +58,7 @@ class Dispatcher:
         route = self.registry.get(site)
         if route is None:
             raise SiteNotFound(site)
-        upstream_path = _strip_site(site, path)
+        upstream_path = strip_site(site, path)
         target = route.base_url.rstrip("/") + upstream_path
         try:
             async with self.session.request(
@@ -77,7 +79,7 @@ class Dispatcher:
             raise UpstreamError(f"upstream request failed for site {site!r}: {exc}") from exc
 
 
-def _strip_site(site: str, path: str) -> str:
+def strip_site(site: str, path: str) -> str:
     """剥离路径中的站点段：``/api/v1/{site}/ips/acquire`` → ``/api/v1/ips/acquire``。"""
     if not path.startswith(_API_PREFIX):
         return path

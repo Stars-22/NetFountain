@@ -8,6 +8,8 @@ from __future__ import annotations
 import threading
 import time
 
+__all__ = ["ProxyStats"]
+
 
 class ProxyStats:
     """代理层统计：全部计数仅在进程内累计，进程重启后归零。"""

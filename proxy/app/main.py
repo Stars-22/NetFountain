@@ -16,14 +16,14 @@ from typing import Any
 import aiohttp
 from fastapi import FastAPI
 
-from ip_pool_common.api import BizCodeLogMiddleware
+from ip_pool_common.api import ApiCounterMiddleware, BizCodeLogMiddleware
 from ip_pool_common.logging_setup import setup_logging
 
+from .api import router
 from .config import ProxySettings, load_proxy_settings
-from .dispatcher import Dispatcher
-from .registry import Registry
-from .routes import router
-from .stats import ProxyStats
+from .core.dispatcher import Dispatcher
+from .core.registry import Registry
+from .core.stats import ProxyStats
 
 logger = logging.getLogger(__name__)
 
@@ -31,25 +31,24 @@ _CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "config", "proxy_routes.yaml"
 )
 
+__all__ = ["create_app", "app"]
 
-class ProxyStatsMiddleware:
+
+def _proxy_stats_middleware_factory():
     """代理层调用计数中间件：按来源客户端 IP 累计 /api/v1 请求次数。
 
-    站点转发与错误计数在路由层记录（``_forward``），此处只负责来源 IP。
+    站点转发与错误计数在路由层记录（``passthrough._record``），此处只负责来源 IP。
     """
 
-    def __init__(self, app: Any) -> None:
-        self.app = app
+    def _counter(scope: dict) -> None:
+        stats = getattr(scope.get("app"), "state", None)
+        proxy_stats = getattr(stats, "stats", None)
+        if proxy_stats is not None:
+            client = scope.get("client")
+            ip = client[0] if client else None
+            proxy_stats.record_call(ip=ip)
 
-    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope.get("path", "").startswith("/api/v1"):
-            stats = getattr(scope.get("app"), "state", None)
-            proxy_stats = getattr(stats, "stats", None)
-            if proxy_stats is not None:
-                client = scope.get("client")
-                ip = client[0] if client else None
-                proxy_stats.record_call(ip=ip)
-        await self.app(scope, receive, send)
+    return _counter
 
 
 def create_app(
@@ -119,7 +118,10 @@ def create_app(
     app.state.start_time = (
         app.state.stats.start_time if start_time is None else start_time
     )
-    app.add_middleware(ProxyStatsMiddleware)
+    # 与两个池服务一致：/api/v1 业务端点计数经 ApiCounterMiddleware 参数化注入
+    app.add_middleware(
+        ApiCounterMiddleware, path_prefix="/api/v1", counter=_proxy_stats_middleware_factory()
+    )
     app.add_middleware(BizCodeLogMiddleware)
     app.include_router(router)
     return app

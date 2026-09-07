@@ -1,7 +1,7 @@
 """stats.py 单元测试：ProxyStats 计数与快照。"""
 from __future__ import annotations
 
-from app.stats import ProxyStats
+from app.core.stats import ProxyStats
 
 
 def test_snapshot_empty():
