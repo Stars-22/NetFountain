@@ -9,8 +9,9 @@ import asyncio
 import aiohttp
 import pytest
 
-from app.pool import Level2Pool, ServiceStats
-from app.syncer import Level1SyncClient, SyncTask
+from app.core.pool import Level2Pool
+from app.core.stats import ServiceStats
+from app.sync import Level1SyncClient, SyncTask
 
 BASE = "http://level1.test"
 
@@ -44,7 +45,7 @@ async def _make_task(mock_session, *, site_fn=None, interval=3.0, sleep_fn=None,
     pool = Level2Pool()
     if stats is None:
         stats = ServiceStats()
-    from app.tester import Tester
+    from app.testing.tester import Tester
 
     tester = Tester(
         target_url="http://www.baidu.com",

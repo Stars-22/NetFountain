@@ -9,8 +9,10 @@ import time
 
 import pytest
 
-from app.pool import Level2Pool, ServiceStats
-from app.tasks import RevalidateTask, SyncTask, TtlSweeper
+from app.core.pool import Level2Pool
+from app.core.stats import ServiceStats
+from app.sync.syncer import SyncTask
+from app.tasks import RevalidateTask, TtlSweeper
 
 
 class _StopLoop(Exception):
@@ -30,8 +32,8 @@ class _SleepRecorder:
             raise _StopLoop()
 
 
-def test_sync_task_reexported():
-    from app.syncer import SyncTask as _SyncTask
+def test_sync_task_single_source():
+    from app.sync import SyncTask as _SyncTask
 
     assert SyncTask is _SyncTask
 

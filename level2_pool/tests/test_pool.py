@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from app.pool import AcquireStrategy
+from app.core.pool import AcquireStrategy
 from ip_pool_common.models import Level2Record, Protocol
 
 
@@ -493,3 +493,22 @@ async def test_acquire_batch_atomic_concurrent(pool, make_l2, make_ip):
     assert len({rec.id for rec in leased}) == 3
     assert pool.stats().leased_total == 3
     assert all(rec.leased for rec in leased)
+
+
+async def test_acquire_strategy_extensible_via_registry(pool, make_l2, make_ip):
+    """新策略经 register_selector 注册即可使用，无需修改池代码（开闭原则）。"""
+    from app.core.pool import AcquireSelector, register_selector
+
+    register_selector(
+        "oldest",
+        AcquireSelector(
+            select_one=lambda candidates, now: candidates[0],
+            select_many=lambda candidates, count, now: candidates[:count],
+        ),
+    )
+    for i in range(1, 4):
+        await pool.upsert(_l2(make_l2, make_ip, i))
+    rec = await pool.acquire("oldest")
+    assert rec.ip == "10.0.0.1"
+    batch = await pool.acquire_batch(2, "oldest")
+    assert [r.ip for r in batch] == ["10.0.0.2", "10.0.0.3"]

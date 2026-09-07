@@ -2,23 +2,35 @@
 
 - 唯一键 = ``proxy_url``（ip+port+protocol 身份），同名记录去重；
 - 本地自增 id（不复用）供 API ``release/delete/{id}`` 精确引用；
-- ``acquire`` 支持提取策略（默认最新优先：从入池顺序尾部向前扫描首个空闲项）
-  与延迟/剩余时间筛选，命中后原子标记租赁；单次提取不排序，
-  直接一次扫描取 argmin/argmax；``acquire_batch`` 单锁内原子提取多条；
+- ``acquire`` 支持提取策略（默认最新优先）与延迟/剩余时间筛选，命中后原子
+  标记租赁；``acquire_batch`` 单锁内原子提取多条；
 - 剩余时间 = ``created_at + ttl - now``（非 ttl 本身），``ttl=None`` 视为永不过期
   （剩余时间无穷大：排序最优先、筛选恒通过）；
 - 租赁无过期时间，仅可被显式 ``release/remove/release_all`` 解除；
 - 所有变更在 ``asyncio.Lock`` 下进行，保证并发安全与分配原子性。
+
+开闭原则：提取策略通过 ``register_selector`` 注册（``_SELECTORS`` 注册表），
+新增策略无需修改 ``acquire``/``acquire_batch``。
 """
 from __future__ import annotations
 
 import asyncio
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from ip_pool_common.models import Level2Record, Protocol
+
+__all__ = [
+    "AcquireSelector",
+    "AcquireStrategy",
+    "Level2Pool",
+    "PoolStats",
+    "remaining_seconds",
+    "register_selector",
+]
 
 
 class AcquireStrategy(StrEnum):
@@ -54,6 +66,108 @@ def _eligible(
     return True
 
 
+# ---------------------------------------------------------------------------
+# 提取策略注册表（开闭扩展点）
+# ---------------------------------------------------------------------------
+
+#: 单条选取：``(候选集, now) -> 记录``；候选集保证非空
+SelectOne = Callable[[list[Level2Record], float], Level2Record]
+#: 批量选取：``(候选集, count, now) -> 按选取顺序排列的记录``
+SelectMany = Callable[[list[Level2Record], int, float], list[Level2Record]]
+
+
+@dataclass(frozen=True)
+class AcquireSelector:
+    """一个提取策略的选取实现（单条 + 批量）。"""
+
+    select_one: SelectOne
+    select_many: SelectMany
+
+
+_SELECTORS: dict[str, AcquireSelector] = {}
+
+
+def _strategy_key(strategy: str | AcquireStrategy) -> str:
+    return strategy.value if isinstance(strategy, AcquireStrategy) else str(strategy)
+
+
+def register_selector(
+    strategy: str | AcquireStrategy, selector: AcquireSelector
+) -> None:
+    """注册/替换提取策略实现（键为策略字符串值，可为新策略扩展）。"""
+    _SELECTORS[_strategy_key(strategy)] = selector
+
+
+def selector_for(strategy: str | AcquireStrategy) -> AcquireSelector:
+    """查询策略实现；未注册抛 ``ValueError``。"""
+    key = _strategy_key(strategy)
+    selector = _SELECTORS.get(key)
+    if selector is None:
+        raise ValueError(
+            f"no selector registered for strategy: {key!r} "
+            f"(available: {', '.join(sorted(_SELECTORS))})"
+        )
+    return selector
+
+
+def _latest_one(candidates: list[Level2Record], now: float) -> Level2Record:
+    return candidates[-1]
+
+
+def _latest_many(
+    candidates: list[Level2Record], count: int, now: float
+) -> list[Level2Record]:
+    return list(reversed(candidates))[:count]
+
+
+def _random_one(candidates: list[Level2Record], now: float) -> Level2Record:
+    return random.choice(candidates)
+
+
+def _random_many(
+    candidates: list[Level2Record], count: int, now: float
+) -> list[Level2Record]:
+    return random.sample(candidates, count)
+
+
+def _latency_asc_one(candidates: list[Level2Record], now: float) -> Level2Record:
+    return min(candidates, key=lambda r: r.latency_ms)
+
+
+def _latency_asc_many(
+    candidates: list[Level2Record], count: int, now: float
+) -> list[Level2Record]:
+    return sorted(candidates, key=lambda r: r.latency_ms)[:count]
+
+
+def _remaining_desc_one(candidates: list[Level2Record], now: float) -> Level2Record:
+    return max(candidates, key=lambda r: remaining_seconds(r, now))
+
+
+def _remaining_desc_many(
+    candidates: list[Level2Record], count: int, now: float
+) -> list[Level2Record]:
+    return sorted(candidates, key=lambda r: -remaining_seconds(r, now))[:count]
+
+
+register_selector(
+    AcquireStrategy.LATEST,
+    AcquireSelector(select_one=_latest_one, select_many=_latest_many),
+)
+register_selector(
+    AcquireStrategy.RANDOM,
+    AcquireSelector(select_one=_random_one, select_many=_random_many),
+)
+register_selector(
+    AcquireStrategy.LATENCY_ASC,
+    AcquireSelector(select_one=_latency_asc_one, select_many=_latency_asc_many),
+)
+register_selector(
+    AcquireStrategy.REMAINING_DESC,
+    AcquireSelector(select_one=_remaining_desc_one, select_many=_remaining_desc_many),
+)
+
+
 @dataclass
 class PoolStats:
     """池内 / 已租赁 / 空闲 的计数（含按协议细分）。"""
@@ -64,23 +178,6 @@ class PoolStats:
     leased_by_proto: dict[Protocol, int]
     free_total: int
     free_by_proto: dict[Protocol, int]
-
-
-@dataclass
-class ServiceStats:
-    """服务运行统计（status 快照）。"""
-
-    uptime: float = 0.0
-    total_pulled: int = 0
-    total_entered: int = 0
-    api_call_count: int = 0
-    last_synced_id: int | None = None
-    sync_failures: int = 0
-    test_failures: int = 0
-    revalidate_failures: int = 0
-    ttl_sweep_failures: int = 0
-    drops: int = 0
-    empty_acquires: int = 0
 
 
 class Level2Pool:
@@ -146,15 +243,14 @@ class Level2Pool:
 
         - 先按 ``max_latency_ms``（延迟上限）与 ``min_remaining_sec``（剩余时间下限，
           默认均不筛选）过滤出空闲候选集；
-        - ``latest``：入池顺序尾部向前首个候选（默认，兼容旧行为）；
-        - ``random``：候选集均匀随机取一；
-        - ``latency_asc`` / ``remaining_desc``：单次提取不排序，一次扫描取
-          argmin/argmax（并列取先入池者）；
+        - 选取由策略注册表分派（``latest`` 默认，兼容旧行为；
+          ``random`` 均匀随机；``latency_asc`` / ``remaining_desc`` 单次提取不排序，
+          一次扫描取 argmin/argmax，并列取先入池者）；
         - 无候选（空池/全被租赁/全被筛选）返回 None。
         """
         async with self._lock:
             ts = time.time() if now is None else now
-            strat = AcquireStrategy(strategy)
+            strat = _strategy_key(strategy)
             candidates = [
                 rec
                 for rec in (self._records[key] for key in self._order)
@@ -162,14 +258,7 @@ class Level2Pool:
             ]
             if not candidates:
                 return None
-            if strat is AcquireStrategy.LATEST:
-                chosen = candidates[-1]
-            elif strat is AcquireStrategy.RANDOM:
-                chosen = random.choice(candidates)
-            elif strat is AcquireStrategy.LATENCY_ASC:
-                chosen = min(candidates, key=lambda r: r.latency_ms)
-            else:  # REMAINING_DESC
-                chosen = max(candidates, key=lambda r: remaining_seconds(r, ts))
+            chosen = selector_for(strat).select_one(candidates, ts)
             chosen.leased = True
             chosen.leased_at = ts
             return chosen
@@ -186,15 +275,15 @@ class Level2Pool:
         """按策略单锁内原子租赁至多 ``count`` 条空闲记录，按选取顺序返回。
 
         - 空闲不足 ``count`` 时返回能租到的全部（部分满足）；无候选返回 ``[]``；
-        - 选取顺序：``latest`` 最新在前 / ``latency_asc`` 延迟升序 /
-          ``remaining_desc`` 剩余时间降序（并列保持先入池在前）/ ``random`` 随机；
+        - 选取顺序由策略注册表分派（``latest`` 最新在前 / ``latency_asc`` 延迟升序 /
+          ``remaining_desc`` 剩余时间降序（并列保持先入池在前）/ ``random`` 随机）；
         - ``count <= 0`` 抛 ``ValueError``（HTTP 层负责参数校验）。
         """
         if count <= 0:
             raise ValueError(f"count must be positive, got {count}")
         async with self._lock:
             ts = time.time() if now is None else now
-            strat = AcquireStrategy(strategy)
+            strat = _strategy_key(strategy)
             candidates = [
                 rec
                 for rec in (self._records[key] for key in self._order)
@@ -203,16 +292,7 @@ class Level2Pool:
             take = min(count, len(candidates))
             if take == 0:
                 return []
-            if strat is AcquireStrategy.LATEST:
-                selected = list(reversed(candidates))[:take]
-            elif strat is AcquireStrategy.RANDOM:
-                selected = random.sample(candidates, take)
-            elif strat is AcquireStrategy.LATENCY_ASC:
-                selected = sorted(candidates, key=lambda r: r.latency_ms)[:take]
-            else:  # REMAINING_DESC
-                selected = sorted(
-                    candidates, key=lambda r: -remaining_seconds(r, ts)
-                )[:take]
+            selected = selector_for(strat).select_many(candidates, take, ts)
             for rec in selected:
                 rec.leased = True
                 rec.leased_at = ts

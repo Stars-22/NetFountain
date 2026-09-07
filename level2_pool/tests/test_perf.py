@@ -10,9 +10,10 @@ import time
 
 import pytest
 
-from app.pool import Level2Pool, ServiceStats
-from app.syncer import Level1SyncClient, SyncTask
-from app.tester import Tester as _Tester
+from app.core.pool import Level2Pool
+from app.core.stats import ServiceStats
+from app.sync import Level1SyncClient, SyncTask
+from app.testing.tester import Tester as _Tester
 
 BASE = "http://level1.test"
 
