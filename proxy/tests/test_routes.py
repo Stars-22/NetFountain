@@ -79,7 +79,7 @@ async def test_health(running_app, registry, aio_mock):
 async def test_health_empty_registry(running_app, tmp_path, aio_mock):
     import yaml
 
-    from app.registry import Registry
+    from app.core.registry import Registry
 
     level1_status = {"pool_size": 0}
     aio_mock.get(

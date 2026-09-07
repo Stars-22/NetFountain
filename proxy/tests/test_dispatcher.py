@@ -9,7 +9,7 @@ import asyncio
 import aiohttp
 import pytest
 
-from app.dispatcher import SiteNotFound, UpstreamError, _strip_site
+from app.core.dispatcher import SiteNotFound, UpstreamError, strip_site as _strip_site
 
 PAYLOAD_A = {"code": 0, "msg": "ok", "data": {"site": "site_a", "pool": ["10.0.0.1"]}}
 PAYLOAD_B = {"code": 0, "msg": "ok", "data": {"site": "site_b", "pool": ["10.0.0.9"]}}

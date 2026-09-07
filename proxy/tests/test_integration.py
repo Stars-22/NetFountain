@@ -9,8 +9,8 @@ import asyncio
 import yaml
 
 from app.config import ProxySettings
+from app.core.registry import Registry
 from app.main import create_app
-from app.registry import Registry
 
 
 def _write_routes(path, sites: list[dict]) -> None:

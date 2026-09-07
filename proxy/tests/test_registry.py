@@ -10,7 +10,7 @@ import aiohttp
 import pytest
 import yaml
 
-from app.registry import Registry
+from app.core.registry import Registry
 
 
 def _write_routes(path, sites: list[dict]) -> None:

@@ -23,8 +23,8 @@ import pytest
 import yaml
 from aiohttp.http_writer import StreamWriter
 
-from app.dispatcher import Dispatcher
-from app.registry import Registry
+from app.core.dispatcher import Dispatcher
+from app.core.registry import Registry
 
 # ---------------------------------------------------------------------------
 # aioresponses 0.7.9 与 aiohttp 3.14 兼容 shim（同 common/level2 测试）
