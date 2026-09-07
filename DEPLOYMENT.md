@@ -186,7 +186,7 @@ providers:
   - `http91`：适配 91HTTP `/v1/get-ip` JSON 接口（携带 `expire_time` 折算 TTL）。
   - `freeproxy`：适配 zdopen `/FreeProxy/Get/` 提取接口（JSON，`code="10001"` 为成功；`trade_no`=app_id、`api_key`=akey；`dalu` 必选 1=大陆/0=海外，`protocol_type` 可选 0=全部/1=http/2=socks4/3=socks5/4=https；`adr` 映射地区，`level` 匿名度字段丢弃，不返回 TTL；业务错误码 12001/12002/12009 等仅记日志返回空）。
   - `default_http`：通用 HTTP 供应商，GET `api_url`（携带 `api_key`），解析 `{data:[{ip,port,protocol,region,ttl}]}` 格式，用于自建/联调供应商。
-- 新增供应商只需在 `level1_pool/app/provider.py` 中「继承 `BaseProvider` + `@register("类型名")`」，随后在 `providers` 列表加一个条目即可，无需改主流程。
+- 新增供应商只需在 `level1_pool/app/providers/` 下新建文件「继承 `BaseProvider` + 实现 `_params`/`_parse` + `@register("类型名")`」并在 `app/providers/__init__.py` 导入，随后在 `providers` 列表加一个条目即可，无需改主流程。
 - `/status` 的 `providers` 字段按供应商返回明细（`total_pulled` / `total_entered` / `pull_failures` / `test_failures` / `drops`），全局汇总字段含义不变（= 各供应商之和）。
 - 多供应商格式下环境变量覆盖（`LEVEL1_*`）不生效（与二级池多开格式一致）；旧格式仍支持环境变量覆盖。
 
@@ -280,7 +280,7 @@ sites:                                   # 站点路由表：site → 二级池�
 
 ### 5.4 前端面板 `frontend/`（纯环境变量，无 YAML）
 
-前端面板 = Vue 面板 + 聚合后端 BFF（`server/server.js`，唯一入口）。无配置文件，全部可调项走环境变量（定义于 `server/config.js`）：
+前端面板 = Vue 面板 + 聚合后端 BFF（`server/index.js`，唯一入口）。无配置文件，全部可调项走环境变量（定义于 `server/config.js`）：
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
@@ -339,7 +339,7 @@ uvicorn app.main:app --app-dir proxy --host 0.0.0.0 --port 9000
 ```bash
 cd frontend
 npm run build      # vue-tsc 类型检查 + vite 打包，必须零报错
-npm start          # node server/server.js → http://localhost:3000
+npm start          # node server/index.js → http://localhost:3000
 ```
 
 - 生产由同一个 Node 进程托管静态 `dist/` 与 `/api`（BFF）；开发调试用 `npm run dev`（BFF 3000 与 Vite 5173 一键同起）。
@@ -401,7 +401,7 @@ User=netfountain
 WantedBy=multi-user.target
 ```
 
-前端面板同理（`WorkingDirectory` 指向 `frontend/`，`ExecStart=/path/to/node server/server.js`）。
+前端面板同理（`WorkingDirectory` 指向 `frontend/`，`ExecStart=/path/to/node server/index.js`）。
 
 ### 8.2 日志
 
@@ -432,7 +432,7 @@ WantedBy=multi-user.target
 
 ### 8.4 停止服务
 
-直接终止各 uvicorn 进程即可。优雅停止：发送 `SIGINT`（Ctrl+C）或 `SIGTERM`，FastAPI lifespan 会取消后台任务并释放 aiohttp 会话。前端面板为 Node 进程，直接终止 `node server/server.js` 即可（SQLite WAL 模式，无长事务，可安全中断）。
+直接终止各 uvicorn 进程即可。优雅停止：发送 `SIGINT`（Ctrl+C）或 `SIGTERM`，FastAPI lifespan 会取消后台任务并释放 aiohttp 会话。前端面板为 Node 进程，直接终止 `node server/index.js` 即可（SQLite WAL 模式，无长事务，可安全中断）。
 
 ## 9. 附：测试运行（可选）
 

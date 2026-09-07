@@ -33,11 +33,19 @@ frontend/
 ├── index.html
 ├── .gitignore                # node_modules/ dist/ netfountain.db*
 ├── server/                   # ===== 聚合后端 BFF（纯 JS ESM，node 直接运行）=====
+│   ├── index.js              # 启动入口：Express 装配 + 采集 + 定时清理 + 生产托管 dist/
 │   ├── config.js             # 全部可调项（采集周期/超时/保留/端口/地址）
+│   ├── response.js           # 统一 {code,msg,data} 响应封装
+│   ├── buckets.js            # 时间范围 / TTL / 延迟分桶常量表（表驱动）
+│   ├── scheduler.js          # 每日 0 点数据保留清理
 │   ├── db.js                 # node:sqlite 打开、WAL、建表、prepared 语句、降采样、清理
-│   ├── collector.js          # 采集循环 + 内存态缓存 + 指标/快照落库
 │   ├── util.js               # num/int/protoMap/latencyStats/avgRemainingSeconds 共享工具
-│   └── server.js             # Express 5：/api 路由 + release-all 代理 + 生产托管 dist/（唯一入口）
+│   ├── collector/            # 采集层
+│   │   ├── index.js          # 采集循环 + 内存态缓存（startCollector/getState）
+│   │   ├── fetcher.js        # 带超时 JSON 拉取 + {code,msg,data} 成功判定
+│   │   └── metrics.js        # metrics/snapshots 落库行构造（纯函数）
+│   ├── aggregators/          # 聚合层（overview/sites/distributions/stats/ips）
+│   └── routes/               # API 路由装配（index 表驱动 + history 缓存 + upstream 转发）
 └── src/                      # ===== Vue 前端 =====
     ├── main.ts               # createApp + pinia + router + Element Plus + 暗色 css
     ├── App.vue               # 布局（el-menu 导航 + 暗色开关 + 错误横幅）
@@ -76,13 +84,13 @@ cd frontend
 npm install
 npm run dev
 
-# 生产：构建后由同一个 server/server.js 托管 dist/ 并提供 /api
+# 生产：构建后由同一个 server/index.js 托管 dist/ 并提供 /api
 npm run build
 npm start          # → http://localhost:3000
 ```
 
 - 依赖 Node ≥ 22.5（`node:sqlite` 稳定版要求；本机 24.18）。
-- 每次改动后必须 `npm run build`（vue-tsc 类型检查 + vite 打包）零报错，再 `node server/server.js` 自检。
+- 每次改动后必须 `npm run build`（vue-tsc 类型检查 + vite 打包）零报错，再 `node server/index.js` 自检。
 
 ## 5. BFF 设计
 
@@ -95,7 +103,7 @@ npm start          # → http://localhost:3000
 | `proxyUrl` | `http://127.0.0.1:9000` | `PROXY_URL` | 代理层地址（站点列表从 `/health` 动态发现） |
 | `collectIntervalMs` | 2000 | `COLLECT_INTERVAL_MS` | metrics 聚合表写入周期 |
 | `snapshotIntervalMs` | 30000 | `SNAPSHOT_INTERVAL_MS` | ip_snapshots 全量快照周期 |
-| `fetchTimeoutMs` | 800 | `FETCH_TIMEOUT_MS` | 单次采集超时即中断 |
+| `fetchTimeoutMs` | 2500 | `FETCH_TIMEOUT_MS` | 单次采集超时即中断 |
 | `retentionDays` | 10 | `RETENTION_DAYS` | 数据保留天数（每日 0 点清理） |
 | `dbFile` | `netfountain.db` | `DB_FILE` | SQLite 文件（落在 frontend/ 根目录） |
 
@@ -111,10 +119,10 @@ npm start          # → http://localhost:3000
 
 写入全部走 `db.prepare(...)` + `BEGIN/COMMIT` 事务。数据保留：`scheduleRetention()` 在每日 0 点及之后每 24h 执行 `DELETE WHERE ts < now - retentionDays*86400`。
 
-### 5.3 采集循环（server/collector.js）
+### 5.3 采集循环（server/collector/）
 
 - **自调度 async 循环**（`setTimeout` 链，避免 `setInterval` 重叠）。
-- 每轮 `Promise.allSettled` 并发请求，每个请求带 `AbortController` 800ms 超时：
+- 每轮 `Promise.allSettled` 并发请求，每个请求带 `AbortController` 2.5s 超时（`fetcher.js`）：
   - `GET level1/api/v1/status`、`GET level1/api/v1/ips`
   - `GET proxy/api/v1/health`（得到站点列表 + 代理层统计）
   - 对 `health.sites` 每个站点：`GET {base_url}/api/v1/status`、`GET {base_url}/api/v1/ips`
@@ -216,7 +224,7 @@ BFF 消费以下上游接口（详细字段见根目录 `API_USAGE.md`）：
 1. **禁止前端直连 8000/8001/9000**，一切数据（含 release-all 写操作）经 BFF `/api/*`。
 2. **禁止修改 NetFountain 后端代码**（本子项目只通过其 HTTP API 交互）。
 3. **历史接口必须降采样聚合**，禁止把 10 天秒级原始数据返回前端。
-4. **采集循环禁止阻塞式长耗时操作**：单次采集 800ms 超时即中断跳过；网络用异步 `fetch`，落库用 `node:sqlite` 同步短写（毫秒级，可接受）。
+4. **采集循环禁止阻塞式长耗时操作**：单次采集 2.5s 超时即中断跳过；网络用异步 `fetch`，落库用 `node:sqlite` 同步短写（毫秒级，可接受）。
 5. 不引入 WebSocket/SSE、第二套 UI 库、Nginx/Docker/MySQL/Redis。
 6. 样式一律用 Element Plus 组件（仅少量 scoped 布局 CSS）。
 7. 一级池记录无 `latency_ms`/`leased`：IP 列表页只展示二级池 IP；一级池以总览横条与站点视图 Tab（统计形式）呈现。
