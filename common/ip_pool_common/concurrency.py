@@ -119,12 +119,17 @@ class BoundedTestPipeline:
         name: str = "-",
     ) -> None:
         self._handle_batch = handle_batch
-        self._worker_count = max(1, worker_count)
+        self.worker_count = max(1, worker_count)
         self._on_error = on_error
         self._on_drop = on_drop
         self._name = name or "-"
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
         self._drops = 0
+
+    @property
+    def queue(self) -> asyncio.Queue:
+        """内部待处理队列（暴露供观测 qsize 等运行状态）。"""
+        return self._queue
 
     @property
     def drops(self) -> int:
@@ -161,8 +166,8 @@ class BoundedTestPipeline:
     async def run_supervised(self, driver: Awaitable) -> None:
         """启动全部 worker 并运行 ``driver``；结束后回收 worker。"""
         workers = [
-            asyncio.create_task(self._run_worker())
-            for _ in range(self._worker_count)
+            asyncio.create_task(self.run_worker())
+            for _ in range(self.worker_count)
         ]
         try:
             await driver
@@ -171,7 +176,7 @@ class BoundedTestPipeline:
                 worker.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
-    async def _run_worker(self) -> None:
+    async def run_worker(self) -> None:
         """批处理 worker：消费队列直到被取消。"""
         while True:
             batch = await self._queue.get()
