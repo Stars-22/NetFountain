@@ -8,7 +8,7 @@ from unittest import mock
 import aiohttp
 import pytest
 
-from app.provider import (
+from app.providers import (
     BaseProvider,
     DefaultHttpProvider,
     FreeProxyProvider,
@@ -21,7 +21,10 @@ from ip_pool_common.models import Protocol
 
 @register("custom_probe")
 class ProbeProvider(BaseProvider):
-    async def pull(self, count: int):
+    def _params(self, count: int):
+        return {}
+
+    def _parse(self, payload, count: int):
         return []
 
 

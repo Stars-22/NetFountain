@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-import app.tester as tester_mod
+import app.testing.tester as tester_mod
 
 
 async def test_test_many_returns_only_passing(make_ip):
@@ -26,7 +26,7 @@ async def test_test_many_uses_proxy_reachability_only(monkeypatch, make_ip):
         called.append(proxy_url)
         return True, 1.0
 
-    monkeypatch.setattr("app.tester.proxy_reachability_test", _fake)
+    monkeypatch.setattr("app.testing.tester.proxy_reachability_test", _fake)
     assert not hasattr(tester_mod, "site_test")
     tester = tester_mod.Tester(timeout=1.0, concurrency=4)
     ips = [make_ip(1), make_ip(2)]
@@ -87,7 +87,7 @@ async def test_timeout_propagated_to_reachability_test(monkeypatch, make_ip):
         captured["timeout"] = timeout
         return True, 1.0
 
-    monkeypatch.setattr("app.tester.proxy_reachability_test", _fake)
+    monkeypatch.setattr("app.testing.tester.proxy_reachability_test", _fake)
     tester = tester_mod.Tester(timeout=2.5, concurrency=2)
     await tester.test_many([make_ip(1)])
     assert captured["timeout"] == 2.5

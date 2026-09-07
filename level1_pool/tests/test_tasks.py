@@ -6,8 +6,9 @@ import time
 
 import pytest
 
-import app.tester as tester_mod
-from app.pool import Level1Pool, ServiceStats
+import app.testing.tester as tester_mod
+from app.core.pool import Level1Pool
+from app.core.stats import ServiceStats
 from app.tasks import PullTask, TtlSweeper
 
 
