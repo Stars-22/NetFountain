@@ -22,3 +22,6 @@ sites:
   - name: gongshang
     base_url: http://127.0.0.1:8002
     target_url: https://gongshang.mingluji.com
+  - name: bing
+    base_url: http://127.0.0.1:8003
+    target_url: https://www.bing.com
