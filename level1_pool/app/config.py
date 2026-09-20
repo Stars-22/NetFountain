@@ -40,6 +40,9 @@ class ProviderConfig(BaseModel):
     dalu: int = 1  # freeproxy 专用：区域选择，1=大陆，0=海外（必选参数）
     protocol_type: int = 0  # freeproxy 专用：0=不发送(全部)，1=http，2=socks4，3=socks5，4=https
     ip_remain: bool = True  # juliangip 专用：携带 ip_remain=1，返回剩余可用时长作为 ttl
+    area: str = ""  # juliangip 动态代理专用：地区筛选，英文逗号分隔（如 北京,上海）
+    isp: str = ""  # juliangip 动态代理专用：运营商筛选（电信/联通/移动）
+    filter_ip: bool = False  # juliangip 动态代理专用：filter=1 过滤今日已提取 IP
     default_ttl: float | None = None  # 供应商未返回 ttl 时填充的默认秒数；None/<=0 不启用
     pull_count: int = 10
     pull_interval: float = 1.0

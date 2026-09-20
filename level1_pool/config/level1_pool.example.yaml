@@ -73,3 +73,22 @@ providers:
     test_buffer: 100
     test_workers: 5
     enabled: true
+  - name: juliang_dynamic    # 巨量IP（动态代理：包时/包量套餐提取接口）
+    type: juliangip_dynamic
+    api_url: http://v2.api.juliangip.com/dynamic/getips
+    trade_no: <你的业务编号>  # 巨量：业务编号（trade_no）
+    api_key: <你的API Key>    # 巨量：API Key（用于 sign 签名）
+    protocol: 1              # 巨量：代理类型 pt，1=HTTP，2=SOCK
+    ip_remain: true          # 携带 ip_remain=1，返回剩余可用时长作为 ttl
+    area: ""                 # 地区筛选，英文逗号分隔（如 北京,上海）；留空不筛选
+    isp: ""                  # 运营商筛选（电信/联通/移动）；留空不筛选
+    filter_ip: false         # filter=1 过滤今日已提取 IP
+    default_ttl: 120
+    pull_count: 100          # 单次提取数量（接口上限 100）
+    pull_interval: 0.5       # 提取间隔（接口频率 10 次/秒）
+    supports_ttl: true
+    test_timeout: 3.0
+    test_concurrency: 50
+    test_buffer: 100
+    test_workers: 5
+    enabled: true

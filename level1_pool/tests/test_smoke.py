@@ -11,6 +11,7 @@ def test_config_import_and_load():
     assert settings.providers is not None
     assert [p.name for p in settings.providers] == [
         "http91_main", "freeproxy_main", "backup_http", "juliang_main",
+        "juliang_dynamic",
     ]
     # provider / 顶层 test_* 兼容字段 = 第一个供应商合并结果
     assert settings.provider.type == "http91"
@@ -38,6 +39,12 @@ def test_config_import_and_load():
     assert p4.protocol == 1 and p4.ip_remain is True
     assert p4.default_ttl == 120 and p4.supports_ttl is True
     assert p4.pull_count == 100 and p4.pull_interval == 1.0 and p4.enabled is True
+    # 第五个供应商（juliangip 动态包时/包量）：专属筛选参数生效
+    p5 = settings.providers[4]
+    assert p5.type == "juliangip_dynamic"
+    assert p5.api_url == "http://v2.api.juliangip.com/dynamic/getips"
+    assert p5.area == "" and p5.isp == "" and p5.filter_ip is False
+    assert p5.pull_count == 100 and p5.pull_interval == 0.5 and p5.enabled is True
 
 
 def test_multi_config_loader():
@@ -47,6 +54,7 @@ def test_multi_config_loader():
     assert cfg.ttl_sweep_interval == 5.0
     assert [p.name for p in cfg.providers] == [
         "http91_main", "freeproxy_main", "backup_http", "juliang_main",
+        "juliang_dynamic",
     ]
     first = cfg.providers[0]
     assert first.type == "http91"

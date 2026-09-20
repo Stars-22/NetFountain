@@ -1,9 +1,13 @@
-"""巨量IP（juliangip）供应商：不限量代理提取接口 GET /unlimited/getips。
+"""巨量IP（juliangip）供应商：不限量 / 动态（包时/包量）代理提取接口。
+
+- 不限量代理：GET http://v2.api.juliangip.com/unlimited/getips
+- 动态（包时/包量）代理：GET http://v2.api.juliangip.com/dynamic/getips
 
 接口文档：https://www.juliangip.com/help/api/unlimited/
+          https://www.juliangip.com/help/api/dynamic/
 签名规则：https://www.juliangip.com/help/api/sign/
 
-JSON 响应结构（result_type=json）：
+两接口响应结构一致（result_type=json）：
 
     {
       "code": 200,
@@ -25,6 +29,8 @@ JSON 响应结构（result_type=json）：
   ``ProviderIp.ttl``；关闭时不携带该参数，ttl 恒为 None；
 - ``sign`` 为「全部请求参数按参数名字典序拼接为 ``k=v&k=v`` 串，末尾追加
   ``&key=<api_key>``」的 32 位小写 MD5；空值参数不参与签名；
+- 动态（包时/包量）接口额外支持 ``area``（地区）、``isp``（运营商）、``filter``
+  （过滤今日已提取 IP）筛选；
 - ``code != 200``（如 401 签名校验失败）仅记日志并返回空列表；网络/超时/HTTP/解析
   异常抛出（基类统一处理）。
 """
@@ -48,7 +54,7 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["JuliangipProvider", "sign_params"]
+__all__ = ["JuliangipDynamicProvider", "JuliangipProvider", "sign_params"]
 
 
 def sign_params(params: dict[str, Any], key: str) -> str:
@@ -99,7 +105,8 @@ class JuliangipProvider(BaseProvider):
 
     MAX_COUNT = 100  # 接口限制：单次提取数量最大 100
 
-    def _params(self, count: int) -> dict[str, str]:
+    def _base_params(self, count: int) -> dict[str, str]:
+        """构造未签名的请求参数（子类可追加产品专属筛选参数后再签名）。"""
         params: dict[str, str] = {
             "trade_no": self.cfg.trade_no,
             "num": str(min(count, self.MAX_COUNT)),
@@ -108,6 +115,10 @@ class JuliangipProvider(BaseProvider):
         }
         if self.cfg.ip_remain:
             params["ip_remain"] = "1"
+        return params
+
+    def _params(self, count: int) -> dict[str, str]:
+        params = self._base_params(count)
         params["sign"] = sign_params(params, self.cfg.api_key)
         return params
 
@@ -135,3 +146,22 @@ class JuliangipProvider(BaseProvider):
             ip, port, ttl = parsed
             out.append(ProviderIp(ip=ip, port=port, protocol=protocol, ttl=ttl))
         return out
+
+
+@register("juliangip_dynamic")
+class JuliangipDynamicProvider(JuliangipProvider):
+    """巨量IP 动态（包时/包量）代理供应商：GET /dynamic/getips。
+
+    响应解析与签名规则同不限量接口，额外支持 ``area``（地区）、``isp``（运营商）、
+    ``filter``（过滤今日已提取 IP）筛选；筛选参数参与签名。
+    """
+
+    def _base_params(self, count: int) -> dict[str, str]:
+        params = super()._base_params(count)
+        if self.cfg.area:
+            params["area"] = self.cfg.area
+        if self.cfg.isp:
+            params["isp"] = self.cfg.isp
+        if self.cfg.filter_ip:
+            params["filter"] = "1"
+        return params
