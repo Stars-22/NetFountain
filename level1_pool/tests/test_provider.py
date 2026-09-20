@@ -13,9 +13,11 @@ from app.providers import (
     DefaultHttpProvider,
     FreeProxyProvider,
     Http91Provider,
+    JuliangipProvider,
     ProviderFactory,
     register,
 )
+from app.providers.juliangip import sign_params
 from ip_pool_common.models import Protocol
 
 
@@ -631,3 +633,187 @@ def test_freeproxy_parse_data_not_object(freeproxy_cfg):
 def test_freeproxy_parse_missing_proxy_list(freeproxy_cfg):
     provider = FreeProxyProvider(freeproxy_cfg, mock.MagicMock())
     assert provider._parse({"code": "10001", "data": {"count": 0}}, 10) == []
+# ---------------------------------------------------------------------------
+# juliangip（巨量IP 不限量代理）
+# ---------------------------------------------------------------------------
+
+
+def _juliang_payload(entries: list[str], code: int = 200, msg: str = "请求成功") -> dict:
+    return {
+        "code": code,
+        "msg": msg,
+        "data": {
+            "count": len(entries),
+            "filter_count": 0,
+            "surplus_quantity": 985,
+            "proxy_list": entries,
+        },
+    }
+
+
+def test_juliang_sign_matches_official_example():
+    """按官方签名文档示例校验 sign 算法（含空值剔除与字典序）。"""
+    params = {"trade_no": "1178311789392776", "num": "10", "city_name": "1", "ip_remain": "1", "result_type": "json"}
+    assert sign_params(params, "99064631962e4e838dac1143092f6112") == (
+        "8f35c3e56bf640cb2597ea2492ca62db"
+    )
+
+
+def test_juliang_sign_skips_empty_values():
+    assert sign_params({"a": "1", "b": ""}, "k") == sign_params({"a": "1"}, "k")
+
+
+async def test_factory_creates_juliangip(mock_session, juliangip_cfg):
+    session, _ = mock_session
+    prov = ProviderFactory.create("juliangip", juliangip_cfg, session)
+    assert isinstance(prov, JuliangipProvider)
+    assert prov.name == "juliangip"
+
+
+async def test_juliang_pull_parses_ip_port_remain(
+    mock_session, juliangip_cfg, juliangip_request_url
+):
+    session, m = mock_session
+    m.get(
+        juliangip_request_url(),
+        status=200,
+        payload=_juliang_payload(
+            ["61.145.245.78:54873,281", "27.153.143.162:35525,120"]
+        ),
+    )
+    provider = JuliangipProvider(juliangip_cfg, session)
+    ips = await provider.pull(10)
+    assert len(ips) == 2
+    assert ips[0].ip == "61.145.245.78"
+    assert ips[0].port == 54873
+    assert ips[0].protocol == Protocol.HTTP
+    assert ips[0].ttl == 281.0
+    assert ips[1].ttl == 120.0
+
+
+async def test_juliang_pull_without_ip_remain_ttl_none(
+    mock_session, juliangip_cfg, juliangip_request_url
+):
+    session, m = mock_session
+    juliangip_cfg.ip_remain = False
+    m.get(
+        juliangip_request_url(ip_remain=False),
+        status=200,
+        payload=_juliang_payload(["1.2.3.4:8080"]),
+    )
+    provider = JuliangipProvider(juliangip_cfg, session)
+    ips = await provider.pull(10)
+    assert len(ips) == 1
+    assert ips[0].ttl is None
+
+
+def test_juliang_params_include_sign_and_flag(juliangip_cfg):
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    params = provider._params(10)
+    assert params["trade_no"] == juliangip_cfg.trade_no
+    assert params["num"] == "10"
+    assert params["pt"] == "1"
+    assert params["result_type"] == "json"
+    assert params["ip_remain"] == "1"
+    assert params["sign"] == sign_params(
+        {k: v for k, v in params.items() if k != "sign"}, juliangip_cfg.api_key
+    )
+
+
+def test_juliang_params_clamp_count_to_100(juliangip_cfg):
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    assert provider._params(200)["num"] == "100"
+
+
+def test_juliang_params_protocol_socks(juliangip_cfg):
+    juliangip_cfg.protocol = 2
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    assert provider._params(10)["pt"] == "2"
+
+
+def test_juliang_protocol_socks5(juliangip_cfg):
+    juliangip_cfg.protocol = 2
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    ips = provider._parse(_juliang_payload(["1.2.3.4:1080,60"]), 10)
+    assert len(ips) == 1
+    assert ips[0].protocol == Protocol.SOCKS5
+
+
+def test_juliang_parse_code_non_200_returns_empty(juliangip_cfg):
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    payload = {"code": 401, "msg": "签名校验失败", "data": []}
+    assert provider._parse(payload, 10) == []
+
+
+def test_juliang_parse_respects_count_limit(juliangip_cfg):
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    entries = [f"1.1.1.{i}:{8000 + i},60" for i in range(1, 16)]
+    assert len(provider._parse(_juliang_payload(entries), 5)) == 5
+
+
+def test_juliang_parse_skips_malformed_entries(juliangip_cfg):
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    ips = provider._parse(
+        _juliang_payload(
+            [
+                "no-port",
+                ":8080",
+                "1.2.3.4:not-a-port",
+                "",
+                42,
+                "1.2.3.5:3128,90",
+            ]
+        ),
+        10,
+    )
+    assert len(ips) == 1
+    assert ips[0].ip == "1.2.3.5"
+    assert ips[0].port == 3128
+    assert ips[0].ttl == 90.0
+
+
+def test_juliang_parse_non_object_and_missing_data(juliangip_cfg):
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    assert provider._parse([], 10) == []
+    assert provider._parse({"code": 200, "data": "oops"}, 10) == []
+    assert provider._parse({"code": 200, "data": {"count": 0}}, 10) == []
+
+
+def test_juliang_parse_accepts_dict_entry(juliangip_cfg):
+    provider = JuliangipProvider(juliangip_cfg, mock.MagicMock())
+    ips = provider._parse(
+        {"code": 200, "data": {"proxy_list": [{"ip": "1.2.3.4", "port": 8080, "ip_remain": 77}]}},
+        10,
+    )
+    assert len(ips) == 1
+    assert ips[0].ttl == 77.0
+
+
+async def test_juliang_pull_500_raises(
+    mock_session, juliangip_cfg, juliangip_request_url
+):
+    session, m = mock_session
+    m.get(juliangip_request_url(), status=500, body=b"boom")
+    provider = JuliangipProvider(juliangip_cfg, session)
+    with pytest.raises(aiohttp.ClientResponseError):
+        await provider.pull(10)
+
+
+async def test_juliang_pull_timeout_raises(
+    mock_session, juliangip_cfg, juliangip_request_url
+):
+    session, m = mock_session
+    m.get(juliangip_request_url(), exception=asyncio.TimeoutError())
+    provider = JuliangipProvider(juliangip_cfg, session)
+    with pytest.raises(asyncio.TimeoutError):
+        await provider.pull(10)
+
+
+async def test_juliang_pull_cancelled_rethrows(
+    mock_session, juliangip_cfg, juliangip_request_url
+):
+    session, m = mock_session
+    m.get(juliangip_request_url(), exception=asyncio.CancelledError())
+    provider = JuliangipProvider(juliangip_cfg, session)
+    with pytest.raises(asyncio.CancelledError):
+        await provider.pull(10)

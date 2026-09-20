@@ -10,7 +10,7 @@ def test_config_import_and_load():
     assert settings.ttl_sweep_interval == 5.0
     assert settings.providers is not None
     assert [p.name for p in settings.providers] == [
-        "http91_main", "freeproxy_main", "backup_http",
+        "http91_main", "freeproxy_main", "backup_http", "juliang_main",
     ]
     # provider / 顶层 test_* 兼容字段 = 第一个供应商合并结果
     assert settings.provider.type == "http91"
@@ -31,6 +31,13 @@ def test_config_import_and_load():
     assert p3.pull_count == 10 and p3.pull_interval == 1.0
     assert p3.test_timeout == 3.0
     assert p3.test_concurrency == 10 and p3.test_buffer == 20 and p3.test_workers == 5
+    # 第四个供应商（juliangip）：专属参数生效
+    p4 = settings.providers[3]
+    assert p4.type == "juliangip"
+    assert p4.api_url == "http://v2.api.juliangip.com/unlimited/getips"
+    assert p4.protocol == 1 and p4.ip_remain is True
+    assert p4.default_ttl == 120 and p4.supports_ttl is True
+    assert p4.pull_count == 100 and p4.pull_interval == 1.0 and p4.enabled is True
 
 
 def test_multi_config_loader():
@@ -39,7 +46,7 @@ def test_multi_config_loader():
     assert cfg.pool.max_size == 500
     assert cfg.ttl_sweep_interval == 5.0
     assert [p.name for p in cfg.providers] == [
-        "http91_main", "freeproxy_main", "backup_http",
+        "http91_main", "freeproxy_main", "backup_http", "juliang_main",
     ]
     first = cfg.providers[0]
     assert first.type == "http91"

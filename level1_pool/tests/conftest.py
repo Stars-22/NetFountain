@@ -176,6 +176,60 @@ def freeproxy_request_url():
 
 
 # ---------------------------------------------------------------------------
+# juliangip（巨量IP）供应商桩：URL / 配置 / 请求 URL 构造
+# ---------------------------------------------------------------------------
+JULIANG_API_URL = "http://v2.api.juliangip.com/unlimited/getips"
+JULIANG_TRADE_NO = "5483587531995538"
+JULIANG_KEY = "99064631962e4e838dac1143092f6112"
+
+
+@pytest.fixture
+def juliangip_cfg():
+    """指向 juliangip 打桩 URL 的供应商配置。"""
+    return ProviderConfig(
+        type="juliangip",
+        api_url=JULIANG_API_URL,
+        api_key=JULIANG_KEY,
+        trade_no=JULIANG_TRADE_NO,
+        protocol=1,
+        ip_remain=True,
+        pull_count=10,
+        pull_interval=1.0,
+        pull_timeout=5.0,
+        supports_ttl=True,
+    )
+
+
+@pytest.fixture
+def juliangip_request_url():
+    """构造 juliangip 实际请求 URL（含 sign），供 aioresponses 打桩精确匹配。"""
+
+    def _make(
+        count: int = 10,
+        trade_no: str = JULIANG_TRADE_NO,
+        key: str = JULIANG_KEY,
+        protocol: int = 1,
+        ip_remain: bool = True,
+        api_url: str = JULIANG_API_URL,
+    ) -> str:
+        from app.providers.juliangip import sign_params
+
+        params: dict[str, str] = {
+            "trade_no": trade_no,
+            "num": str(min(count, 100)),
+            "pt": str(protocol),
+            "result_type": "json",
+        }
+        if ip_remain:
+            params["ip_remain"] = "1"
+        params["sign"] = sign_params(params, key)
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        return f"{api_url}?{qs}"
+
+    return _make
+
+
+# ---------------------------------------------------------------------------
 # 网络桩
 # ---------------------------------------------------------------------------
 

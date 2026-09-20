@@ -57,3 +57,19 @@ providers:
     api_url: http://provider.example.com/api
     api_key: <你的密钥>
     enabled: false
+  - name: juliang_main       # 巨量IP（不限量代理提取接口）
+    type: juliangip
+    api_url: http://v2.api.juliangip.com/unlimited/getips
+    trade_no: <你的业务编号>  # 巨量：业务编号（trade_no）
+    api_key: <你的API Key>    # 巨量：API Key（用于 sign 签名）
+    protocol: 1              # 巨量：代理类型 pt，1=HTTP，2=SOCK
+    ip_remain: true          # 携带 ip_remain=1，返回剩余可用时长作为 ttl
+    default_ttl: 120         # 供应商未返回 ttl 时的兜底秒数（ip_remain=false 时生效）
+    pull_count: 100          # 单次提取数量（接口上限 100）
+    pull_interval: 1.0       # 提取间隔（接口要求 1 次/秒）
+    supports_ttl: true       # ip_remain=1 时接口返回剩余可用时长
+    test_timeout: 3.0
+    test_concurrency: 50
+    test_buffer: 100
+    test_workers: 5
+    enabled: true
