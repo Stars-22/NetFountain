@@ -142,11 +142,11 @@ global:                    # 供应商条目默认值（可选，条目未写字
 
 providers:
   - name: http91_main      # 供应商唯一名称（缺省自动 provider_N，/status 明细键）
-    type: http91           # 供应商类型：http91 | default_http | freeproxy
+    type: http91           # 供应商类型：http91 | default_http | freeproxy | juliangip
     api_url: http://api.91http.com/v1/get-ip   # 供应商拉取地址
-    api_key: <你的密钥>     # 供应商密钥（91HTTP 为 secret，freeproxy 为 akey）
-    trade_no: <你的业务编号> # 供应商业务编号（91HTTP / freeproxy 专用，freeproxy 为 app_id）
-    protocol: 1            # 91HTTP：1=HTTP，2=SOCKS5
+    api_key: <你的密钥>     # 供应商密钥（91HTTP 为 secret，freeproxy 为 akey，juliangip 为 API Key）
+    trade_no: <你的业务编号> # 供应商业务编号（91HTTP / freeproxy / juliangip 专用，freeproxy 为 app_id）
+    protocol: 1            # 91HTTP / juliangip：1=HTTP，2=SOCKS5
     supports_ttl: true     # 供应商是否返回过期时间（91HTTP 支持）
     test_timeout: 3.0      # —— 以下为本供应商独立测试管线配置（可省略回退 global）——
     test_concurrency: 50
@@ -174,17 +174,30 @@ providers:
     api_url: http://provider.example.com/api
     api_key: <你的密钥>
     enabled: false
+  - name: juliang_main     # 第四个供应商示例（巨量IP 不限量代理提取接口）
+    type: juliangip
+    api_url: http://v2.api.juliangip.com/unlimited/getips
+    trade_no: <你的业务编号> # 巨量：业务编号（trade_no）
+    api_key: <你的API Key>   # 巨量：API Key（用于 sign 签名）
+    protocol: 1            # 巨量：代理类型 pt，1=HTTP，2=SOCK
+    ip_remain: true        # 携带 ip_remain=1，返回剩余可用时长作为 ttl
+    default_ttl: 120       # 供应商未返回 ttl 时的兜底秒数（ip_remain=false 时生效）
+    pull_count: 100        # 单次提取数量（接口上限 100）
+    pull_interval: 1.0     # 提取间隔（接口要求 1 次/秒）
+    supports_ttl: true
+    enabled: true
 ```
 
 要点：
 
-- **凭据入库**：`level1_pool/config/level1_pool.yaml` 属运行期本地文件（已 gitignore），请从模板 `config/level1_pool.example.yaml` 复制并替换 `api_key` / `trade_no` 为**你自己的** 91HTTP / freeproxy 凭据，确保不入库、不泄露。
+- **凭据入库**：`level1_pool/config/level1_pool.yaml` 属运行期本地文件（已 gitignore），请从模板 `config/level1_pool.example.yaml` 复制并替换 `api_key` / `trade_no` 为**你自己的** 91HTTP / freeproxy / 巨量IP 凭据，确保不入库、不泄露。
 - **每个供应商独立限频**：各拉取器使用独立 `pull_lock`，互不拖慢节奏；所有供应商拉取的 IP 经各自测试管线后进入同一个池（按 `proxy_url` 全局去重）。
 - **default_ttl（默认 TTL）**：供应商条目可配 `default_ttl`（秒）；供应商未返回 ttl 的 IP 拉取后统一填充该值（供应商返回了 ttl 则不覆盖）。到期后由 TTL 清扫移除，下次拉取重新入池。省略/`None` 不启用（IP 视为永久）。
 - **重复 IP 去重规则**：region 未变且 ttl 未延长（新 ≤ 旧，含双方均无 ttl）时跳过不更新（`duplicates` 累计，不触发二级池重测）；新拉取无 ttl 但池内有 ttl 时跳过（有限 ttl 不被覆盖为永久，等旧记录 TTL 到期清扫后下次拉取重新入池）；其余重复（region 变化、ttl 延长续期、永久升级为有限）删除旧记录并以新 id 重建刷新。
-- `provider.type`（即 `providers[].type`）当前支持三种：
+- `provider.type`（即 `providers[].type`）当前支持四种：
   - `http91`：适配 91HTTP `/v1/get-ip` JSON 接口（携带 `expire_time` 折算 TTL）。
   - `freeproxy`：适配 zdopen `/FreeProxy/Get/` 提取接口（JSON，`code="10001"` 为成功；`trade_no`=app_id、`api_key`=akey；`dalu` 必选 1=大陆/0=海外，`protocol_type` 可选 0=全部/1=http/2=socks4/3=socks5/4=https；`adr` 映射地区，`level` 匿名度字段丢弃，不返回 TTL；业务错误码 12001/12002/12009 等仅记日志返回空）。
+  - `juliangip`：适配巨量IP 不限量代理 `/unlimited/getips` JSON 接口（`trade_no`=业务编号、`api_key`=API Key；`sign` 为「请求参数按名升序 + `&key=<key>`」的 MD5；`protocol` 映射代理类型 `pt`（1=HTTP/2=SOCK），`num` 上限 100；`ip_remain=true` 时结果形如 `ip:port,剩余秒数` 并折算为 TTL，`code!=200` 仅记日志返回空）。
   - `default_http`：通用 HTTP 供应商，GET `api_url`（携带 `api_key`），解析 `{data:[{ip,port,protocol,region,ttl}]}` 格式，用于自建/联调供应商。
 - 新增供应商只需在 `level1_pool/app/providers/` 下新建文件「继承 `BaseProvider` + 实现 `_params`/`_parse` + `@register("类型名")`」并在 `app/providers/__init__.py` 导入，随后在 `providers` 列表加一个条目即可，无需改主流程。
 - `/status` 的 `providers` 字段按供应商返回明细（`total_pulled` / `total_entered` / `pull_failures` / `test_failures` / `drops`），全局汇总字段含义不变（= 各供应商之和）。
