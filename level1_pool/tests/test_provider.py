@@ -13,6 +13,7 @@ from app.providers import (
     DefaultHttpProvider,
     FreeProxyProvider,
     Http91Provider,
+    JuliangipDynamicProvider,
     JuliangipProvider,
     ProviderFactory,
     register,
@@ -817,3 +818,54 @@ async def test_juliang_pull_cancelled_rethrows(
     provider = JuliangipProvider(juliangip_cfg, session)
     with pytest.raises(asyncio.CancelledError):
         await provider.pull(10)
+# ---------------------------------------------------------------------------
+# juliangip_dynamic（巨量IP 动态/包时-包量代理）
+# ---------------------------------------------------------------------------
+
+
+async def test_factory_creates_juliangip_dynamic(mock_session, juliangip_dynamic_cfg):
+    session, _ = mock_session
+    prov = ProviderFactory.create("juliangip_dynamic", juliangip_dynamic_cfg, session)
+    assert isinstance(prov, JuliangipDynamicProvider)
+    assert prov.name == "juliangip_dynamic"
+
+
+def test_juliang_dynamic_params_include_filters_and_sign(juliangip_dynamic_cfg):
+    provider = JuliangipDynamicProvider(juliangip_dynamic_cfg, mock.MagicMock())
+    params = provider._params(10)
+    assert params["area"] == "北京,上海"
+    assert params["isp"] == "电信"
+    assert params["filter"] == "1"
+    assert params["sign"] == sign_params(
+        {k: v for k, v in params.items() if k != "sign"}, juliangip_dynamic_cfg.api_key
+    )
+
+
+def test_juliang_dynamic_params_omit_empty_filters(juliangip_dynamic_cfg):
+    juliangip_dynamic_cfg.area = ""
+    juliangip_dynamic_cfg.isp = ""
+    juliangip_dynamic_cfg.filter_ip = False
+    provider = JuliangipDynamicProvider(juliangip_dynamic_cfg, mock.MagicMock())
+    params = provider._params(10)
+    assert "area" not in params and "isp" not in params and "filter" not in params
+
+
+async def test_juliang_dynamic_pull_parses(
+    mock_session, juliangip_dynamic_cfg, juliangip_dynamic_request_url
+):
+    session, m = mock_session
+    juliangip_dynamic_cfg.area = ""
+    juliangip_dynamic_cfg.isp = ""
+    juliangip_dynamic_cfg.filter_ip = False
+    m.get(
+        juliangip_dynamic_request_url(area="", isp="", filter_ip=False),
+        status=200,
+        payload=_juliang_payload(
+            ["61.145.245.78:54873,281", "27.153.143.162:35525,120"]
+        ),
+    )
+    provider = JuliangipDynamicProvider(juliangip_dynamic_cfg, session)
+    ips = await provider.pull(10)
+    assert len(ips) == 2
+    assert ips[0].ip == "61.145.245.78"
+    assert ips[0].ttl == 281.0
