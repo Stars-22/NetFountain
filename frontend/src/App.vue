@@ -43,6 +43,13 @@ onBeforeUnmount(() => dataStore.stop())
         <el-menu-item index="/sites">站点视图</el-menu-item>
         <el-menu-item index="/stats">统计分析</el-menu-item>
       </el-menu>
+      <div class="aside-footer">
+        <a
+          href="https://github.com/Stars-22/NetFountain"
+          target="_blank"
+          rel="noopener noreferrer"
+        >NetFountain · GitHub</a>
+      </div>
     </el-aside>
     <el-container>
       <el-header class="header">
@@ -77,13 +84,36 @@ onBeforeUnmount(() => dataStore.stop())
 
 <style scoped>
 .layout {
-  height: 100vh;
+  height: 100%;
 }
 .aside {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border-right: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color);
 }
+.aside :deep(.el-menu) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.aside-footer {
+  flex-shrink: 0;
+  padding: 12px;
+  border-top: 1px solid var(--el-border-color-light);
+  text-align: center;
+}
+.aside-footer a {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-decoration: none;
+}
+.aside-footer a:hover {
+  color: var(--el-color-primary);
+}
 .brand {
+  flex-shrink: 0;
   height: 60px;
   display: flex;
   align-items: center;
