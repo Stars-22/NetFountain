@@ -1,3 +1,5 @@
+<p align="center"><img src="frontend/public/logo.png" alt="NetFountain" width="160"></p>
+
 # NetFountain —— 两级代理 IP 池系统
 
 一个两级代理 IP 池系统，由四个后端目录组成：`common`（公共库）、`level1_pool`（一级池）、`level2_pool`（二级池）、`proxy`（代理层），外加自包含子项目 `frontend`（Web 面板 + 数据聚合后端 BFF）。三个业务项目是独立服务，均依赖公共库 `ip_pool_common`，项目之间不相互 import，仅通过 HTTP API 通信；`frontend` 仅经 HTTP 访问三个服务，不修改其后端代码。

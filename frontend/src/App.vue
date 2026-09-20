@@ -33,7 +33,10 @@ onBeforeUnmount(() => dataStore.stop())
 <template>
   <el-container class="layout">
     <el-aside width="200px" class="aside">
-      <div class="brand">NetFountain</div>
+      <div class="brand">
+        <img class="brand-logo" src="/logo.png" alt="NetFountain" />
+        <span>NetFountain</span>
+      </div>
       <el-menu :default-active="active" @select="go">
         <el-menu-item index="/">总览</el-menu-item>
         <el-menu-item index="/ips">IP 列表</el-menu-item>
@@ -82,11 +85,19 @@ onBeforeUnmount(() => dataStore.stop())
 }
 .brand {
   height: 60px;
-  line-height: 60px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   font-weight: 700;
   font-size: 18px;
   color: var(--el-color-primary);
+}
+.brand-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: contain;
 }
 .header {
   display: flex;
