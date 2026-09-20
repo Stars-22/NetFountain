@@ -4,3 +4,4 @@ netfountain.db
 netfountain.db-wal
 netfountain.db-shm
 *.log
+Thumbs.db
