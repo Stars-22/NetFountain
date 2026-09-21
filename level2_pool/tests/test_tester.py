@@ -58,6 +58,22 @@ async def test_site_filter_uses_real_site_test(make_ip, tester_factory):
     assert result[0].latency_ms == 50.0
 
 
+async def test_site_filter_passes_headers(make_ip, tester_factory):
+    """配置 headers 时透传给 site_test_detailed（站点连通测试请求头）。"""
+    tester = tester_factory(site_fn=None, headers={"User-Agent": "ua-test"})
+    with mock.patch(
+        "app.testing.tester.site_test_detailed",
+        new=mock.AsyncMock(return_value=(True, 50.0, None)),
+    ) as mocked:
+        await tester.site_filter([_ip(make_ip, 1)])
+    mocked.assert_called_once_with(
+        "http://10.0.0.1:8001",
+        "http://www.baidu.com",
+        timeout=1.0,
+        headers={"User-Agent": "ua-test"},
+    )
+
+
 async def test_site_filter_empty(make_ip, tester_factory):
     tester = tester_factory()
     assert await tester.site_filter([]) == []

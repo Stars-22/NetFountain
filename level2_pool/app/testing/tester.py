@@ -15,7 +15,7 @@ import inspect
 import logging
 import time
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from ip_pool_common.models import IpRecord, Level2Record
 from ip_pool_common.testing import (
@@ -48,6 +48,7 @@ class Tester:
         concurrency: int = 20,
         site_fn: SiteTestFn | None = None,
         revalidate_fn: RevalidateFn | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         self.target_url = target_url
         self.threshold_ms = threshold_ms
@@ -55,12 +56,20 @@ class Tester:
         self.concurrency = concurrency
         self._site_fn = site_fn
         self._revalidate_fn = revalidate_fn
+        self.headers = dict(headers) if headers else {}
 
     async def _site(self, rec: IpRecord) -> tuple[bool, float, str | None]:
         if self._site_fn is not None:
             res = self._site_fn(rec)
             ok, latency = await res if inspect.isawaitable(res) else res
             return ok, latency, None
+        if self.headers:
+            return await site_test_detailed(
+                rec.proxy_url,
+                self.target_url,
+                timeout=self.connect_timeout,
+                headers=self.headers,
+            )
         return await site_test_detailed(
             rec.proxy_url, self.target_url, timeout=self.connect_timeout
         )

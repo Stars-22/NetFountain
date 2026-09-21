@@ -11,10 +11,18 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ip_pool_common.config import load_settings, load_yaml
+
+#: 站点连通测试缺省请求头：内置桌面 Chrome UA。子池可经 ``headers`` 按键覆盖/追加。
+DEFAULT_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+}
 
 
 class ServiceConfig(BaseModel):
@@ -61,6 +69,7 @@ class Level2Settings(BaseSettings):
     level1: Level1Config = Level1Config()
     sync: SyncConfig = SyncConfig()
     test: TestConfig = TestConfig()
+    headers: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_HEADERS))
     revalidate_interval: float = 60.0
     ttl_sweep_interval: float = 5.0
 
@@ -121,6 +130,11 @@ def load_level2_pool_config(path: str) -> Level2PoolsConfig:
     reload_interval = global_data.get("reload_interval", 5.0)
     log_dir = global_data.get("log_dir")
     pool_base = {k: v for k, v in global_data.items() if k not in ("reload_interval", "log_dir")}
+    # 缺省请求头（内置浏览器 UA）作为基底，与全局 headers 按键合并；子池 headers 再覆盖。
+    global_headers = pool_base.get("headers")
+    pool_base["headers"] = _deep_merge(
+        DEFAULT_HEADERS, global_headers if isinstance(global_headers, dict) else {}
+    )
 
     raw_pools = data["pools"]
     if not isinstance(raw_pools, list) or not raw_pools:

@@ -34,3 +34,7 @@ pools:
     service:
       port: 8002
       log_level: DEBUG         # 子池覆盖全局 service.log_level（示例）
+    # 站点连通测试请求头（可选）。缺省即内置桌面 Chrome UA；此处按键覆盖/追加。
+    # 未写 User-Agent 时保留默认 UA，仅追加其它头；写 User-Agent 则覆盖默认。
+    headers:
+      User-Agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

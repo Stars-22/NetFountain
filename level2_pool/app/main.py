@@ -88,6 +88,7 @@ def create_app(
                 threshold_ms=settings.test.latency_threshold_ms,
                 connect_timeout=settings.test.connect_timeout,
                 concurrency=settings.test.concurrency,
+                headers=settings.headers,
             )
             if start_tasks
             else None
