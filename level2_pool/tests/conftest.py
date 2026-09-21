@@ -169,6 +169,7 @@ def tester_factory():
         threshold: int = 2000,
         target_url: str = "http://www.baidu.com",
         concurrency: int = 10,
+        headers=None,
     ) -> Tester:
         return Tester(
             target_url=target_url,
@@ -177,6 +178,7 @@ def tester_factory():
             concurrency=concurrency,
             site_fn=site_fn,
             revalidate_fn=revalidate_fn,
+            headers=headers,
         )
 
     return _make

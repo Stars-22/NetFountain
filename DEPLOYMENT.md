@@ -260,12 +260,15 @@ pools:
     service:
       port: 8002
       log_level: DEBUG         # 子池覆盖全局 service.log_level（示例）
+    headers:                   # 可选：站点连通测试请求头；缺省即内置桌面 Chrome UA
+      User-Agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ```
 
 要点：
 
 - **多开**：`pools` 列表内每项一个子池（站点），`python -m app.launcher` 单进程多线程启动全部；列表仅 1 项即单开。站点名全局唯一，作为代理层的路由键。
 - **配置优先级**：子池字段覆盖 `global`；子池未写的字段回退全局；`service.port` 每子池必填。
+- **请求头（headers）**：子池根字段，按键与 `global.headers` 及内置默认合并；缺省即内置桌面 Chrome UA，子池写 `User-Agent` 则覆盖、只写其它头则保留默认 UA。该头仅用于**站点连通测试**（`target_url`），不参与代理可达性复验。部分接口（如全国公共资源交易平台）强制校验 UA，需据此配置。
 - **热更新（软启停）**：修改并保存配置文件后，等待一个 `reload_interval`：新增/重新 `enabled` 的子池自动启动、删除或 `enabled: false` 的子池自动关闭、配置有改动的子池自动重启。无需重启整个进程。
 - **每池日志**：stdout 聚合展示（多开时每行带子池名，可用 `grep` 过滤）；如需按子池拆分到独立文件，配置 `global.log_dir`（相对运行目录），每个子池写入 `logs/level2_pool_<site>.log`，用 `tail -f` 单独查看。
 - 配置里的 `site.name` 必须与代理层 `proxy_routes.yaml` 中 `sites[].name` 完全一致（大小写敏感）。

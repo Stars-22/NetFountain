@@ -209,3 +209,71 @@ def test_workers_string_none_coerced(tmp_path):
     data["global"]["test"]["workers"] = 4
     pools = load_level2_pools(_write_yaml(tmp_path, data))
     assert pools[0].settings.test.workers == 4
+
+
+# ---------------------------------------------------------------------------
+# headers（站点连通测试请求头，缺省内置浏览器 UA）
+# ---------------------------------------------------------------------------
+
+
+def test_headers_default_browser_ua(tmp_path):
+    """未配置 headers 时使用内置桌面 Chrome UA。"""
+    data = {
+        "pools": [
+            {"site": {"name": "a", "target_url": "http://a"}, "service": {"port": 8001}},
+        ],
+    }
+    pools = load_level2_pools(_write_yaml(tmp_path, data))
+    ua = pools[0].settings.headers["User-Agent"]
+    assert "Mozilla/5.0" in ua
+    assert "Chrome/" in ua
+
+
+def test_pool_headers_merge_global_and_default(tmp_path):
+    """global.headers 与子池 headers 按键合并；子池未写 UA 时保留默认 UA。"""
+    data = {
+        "global": {"headers": {"Accept-Language": "zh-CN"}},
+        "pools": [
+            {
+                "site": {"name": "a", "target_url": "http://a"},
+                "service": {"port": 8001},
+                "headers": {"Referer": "https://ref/"},
+            },
+        ],
+    }
+    pools = load_level2_pools(_write_yaml(tmp_path, data))
+    headers = pools[0].settings.headers
+    assert headers["Accept-Language"] == "zh-CN"
+    assert headers["Referer"] == "https://ref/"
+    assert "Mozilla/5.0" in headers["User-Agent"]        # 默认 UA 保留
+
+
+def test_pool_headers_override_ua(tmp_path):
+    """子池 headers 指定 User-Agent 时覆盖默认/全局 UA。"""
+    data = {
+        "global": {"headers": {"User-Agent": "global-ua"}},
+        "pools": [
+            {
+                "site": {"name": "a", "target_url": "http://a"},
+                "service": {"port": 8001},
+                "headers": {"User-Agent": "pool-ua"},
+            },
+        ],
+    }
+    pools = load_level2_pools(_write_yaml(tmp_path, data))
+    assert pools[0].settings.headers["User-Agent"] == "pool-ua"
+
+
+def test_legacy_format_headers_default(tmp_path):
+    """旧格式（无 pools 键）同样获得默认 UA，且可显式覆盖。"""
+    data = {
+        "service": {"host": "0.0.0.0", "port": 8001},
+        "site": {"name": "legacy", "target_url": "http://a"},
+        "headers": {"User-Agent": "legacy-ua"},
+    }
+    cfg = load_level2_pool_config(_write_yaml(tmp_path, data))
+    assert cfg.pools[0].settings.headers == {"User-Agent": "legacy-ua"}
+
+    data.pop("headers")
+    cfg = load_level2_pool_config(_write_yaml(tmp_path, data))
+    assert "Mozilla/5.0" in cfg.pools[0].settings.headers["User-Agent"]

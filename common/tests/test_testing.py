@@ -140,6 +140,51 @@ async def test_site_test_with_provided_session(mock_session):
     assert ok is True
 
 
+class _FakeResponse:
+    status = 200
+
+    async def read(self) -> bytes:
+        return b"ok"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _RecordingSession:
+    """记录 get() 调用参数的假会话，用于断言 headers 透传。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return _FakeResponse()
+
+
+async def test_site_test_forwards_headers():
+    """site_test_detailed 将 headers 作为目标请求头透传给 session.get。"""
+    session = _RecordingSession()
+    ok, _, reason = await site_test_detailed(
+        HTTP_PROXY, SITE_URL, headers={"User-Agent": "test-ua"}, session=session
+    )
+    assert ok is True
+    assert reason is None
+    url, kwargs = session.calls[0]
+    assert url == SITE_URL
+    assert kwargs["headers"] == {"User-Agent": "test-ua"}
+
+
+async def test_site_test_no_headers_default_none():
+    """不传 headers 时按 None 调用 session.get（保持默认行为）。"""
+    session = _RecordingSession()
+    await site_test(HTTP_PROXY, SITE_URL, session=session)
+    _, kwargs = session.calls[0]
+    assert kwargs["headers"] is None
+
+
 async def test_site_test_invalid_proxy():
     ok, latency = await site_test("", SITE_URL)
     assert ok is False

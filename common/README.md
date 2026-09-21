@@ -122,9 +122,11 @@ async def proxy_reachability_test(proxy_url: str, timeout: float = 3.0) -> tuple
     纯握手使 lazy-CONNECT 类代理（对任何 CONNECT 立即回 200）也能被正确判定为可达。
     返回 (ok, latency_ms)。session 参数仅保留兼容旧签名，本实现不再使用。"""
 
-async def site_test(proxy_url: str, target_url: str, timeout: float = 3.0) -> tuple[bool, float]:
+async def site_test(proxy_url: str, target_url: str, timeout: float = 3.0,
+                    headers: Mapping[str, str] | None = None) -> tuple[bool, float]:
     """经代理真实访问目标站点，验证出口可达。返回 (ok, latency_ms)。
     收到任意 <500 的 HTTP 响应即判 ok；5xx/连接错误/超时判失败。
+    headers 为随目标请求发送的附加请求头（如 User-Agent），None=用 aiohttp 默认头。
     仅二级池初始入池测试使用。"""
 
 # 需要失败原因（供批次汇总日志，如 timeout*10）时，使用 *_detailed 变体：
