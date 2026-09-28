@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.vite/
 netfountain.db
 netfountain.db-wal
 netfountain.db-shm
