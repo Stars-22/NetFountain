@@ -1,0 +1,26 @@
+# 代理层路由表模板：复制为同目录的 proxy_routes.yaml 后再运行/部署。
+# 运行期真实路由表 proxy_routes.yaml 不入库（见 .gitignore）。
+service:
+  host: 0.0.0.0
+  port: 9000
+  log_level: INFO
+
+registry:
+  route_file: config/proxy_routes.yaml   # 本地路由表文件（相对项目根目录）
+  route_url: ""                          # 或远端路由表 URL（两者二选一，URL 优先）
+  reload_interval: 60.0                  # 路由表热更新周期（秒）
+
+level1:
+  base_url: http://127.0.0.1:8000        # 一级池地址（供 /health 实时聚合一级池 /status）
+  timeout: 5.0                           # 到一级池 /status 拉取超时（秒）
+
+dispatch:
+  timeout: 10.0                          # 到二级池的透传超时（秒）
+
+sites:                                   # 站点路由表：site → 二级池地址（示例 site_a / site_b）
+  - name: site_a
+    base_url: http://127.0.0.1:8001
+    target_url: http://www.baidu.com
+  - name: site_b
+    base_url: http://127.0.0.1:8002
+    target_url: https://www.example.com
