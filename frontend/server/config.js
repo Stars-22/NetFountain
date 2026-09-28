@@ -11,8 +11,8 @@ export const config = {
   // 采集周期：metrics 聚合表写入周期（原计划 1~2s，默认 2s）
   collectIntervalMs: Number(process.env.COLLECT_INTERVAL_MS || 2000),
 
-  // 全量 IP 快照落库周期（低频，避免秒级全量写放大）
-  snapshotIntervalMs: Number(process.env.SNAPSHOT_INTERVAL_MS || 30000),
+  // 全量 IP 快照落库周期（默认 60s，避免全量快照写入放大）
+  snapshotIntervalMs: Number(process.env.SNAPSHOT_INTERVAL_MS || 60000),
 
   // 单次采集超时：超过即中断跳过，不阻塞采集循环
   fetchTimeoutMs: Number(process.env.FETCH_TIMEOUT_MS || 2500),
@@ -21,8 +21,8 @@ export const config = {
   // 避免上游单次瞬时超时导致面板闪烁离线/空白
   offlineAfterFailures: Number(process.env.OFFLINE_AFTER_FAILURES || 3),
 
-  // 数据保留天数，每天 0 点清理
-  retentionDays: Number(process.env.RETENTION_DAYS || 10),
+  // 数据保留天数（默认 7 天），每天 0 点清理
+  retentionDays: Number(process.env.RETENTION_DAYS || 7),
 
   // SQLite 单文件数据库
   dbFile: process.env.DB_FILE || 'netfountain.db',

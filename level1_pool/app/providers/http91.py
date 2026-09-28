@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ip_pool_common.models import Protocol, ProviderIp
@@ -39,6 +39,10 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: 91HTTP 的 ``expire_time`` 为北京时间（UTC+8）。显式带时区解析，避免依赖
+#: 运行环境本地时区（容器默认 UTC 会把 TTL 多算 8 小时）。
+_EXPIRE_TZ = timezone(timedelta(hours=8))
 
 __all__ = ["Http91Provider"]
 
@@ -101,7 +105,7 @@ class Http91Provider(BaseProvider):
         text = expire_time.strip()
         for fmt in Http91Provider._EXPIRE_FORMATS:
             try:
-                ts = datetime.strptime(text, fmt).timestamp()
+                ts = datetime.strptime(text, fmt).replace(tzinfo=_EXPIRE_TZ).timestamp()
             except ValueError:
                 continue
             return max(ts - now, 0.0)

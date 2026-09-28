@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import aiohttp
@@ -289,7 +289,11 @@ async def test_http91_pull_parses_expire_time_to_ttl(
 
 def test_http91_parse_ttl_remaining_seconds(http91_cfg):
     provider = Http91Provider(http91_cfg, mock.MagicMock())
-    now = datetime.strptime("2026-08-28 17:00:00", "%Y-%m-%d %H:%M:%S").timestamp()
+    now = (
+        datetime.strptime("2026-08-28 17:00:00", "%Y-%m-%d %H:%M:%S")
+        .replace(tzinfo=timezone(timedelta(hours=8)))
+        .timestamp()
+    )
     ips = provider._parse(
         _http91_payload(
             [{"ip": "1.2.3.4", "port": 8080, "expire_time": "2026-08-28 17:03:06"}]
