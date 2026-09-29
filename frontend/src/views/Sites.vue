@@ -392,8 +392,9 @@ async function confirmRelease() {
 <style scoped>
 .toolbar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -404,7 +405,44 @@ async function confirmRelease() {
   flex-shrink: 0;
 }
 .tabs {
-  flex: 1;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.tabs :deep(.el-tabs__header) {
+  margin: 0;
+  height: auto;
+  border-bottom: none;
+}
+.tabs :deep(.el-tabs__nav-wrap) {
+  overflow: visible;
+  margin-bottom: 0;
+}
+.tabs :deep(.el-tabs__nav-scroll) {
+  height: auto;
+  overflow: visible;
+}
+.tabs :deep(.el-tabs__nav-prev),
+.tabs :deep(.el-tabs__nav-next) {
+  display: none;
+}
+.tabs :deep(.el-tabs__nav) {
+  float: none;
+  white-space: normal;
+  flex-wrap: wrap;
+  gap: 0;
+  border: none;
+  border-radius: 0;
+  transform: none !important;
+}
+.tabs :deep(.el-tabs__nav .el-tabs__item) {
+  margin: 0 -1px -1px 0;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 0;
+}
+.tabs :deep(.el-tabs__nav .el-tabs__item.is-active) {
+  border-color: var(--el-color-primary);
+  position: relative;
+  z-index: 1;
 }
 .mb {
   margin-bottom: 12px;
